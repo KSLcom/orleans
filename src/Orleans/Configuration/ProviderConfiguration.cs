@@ -1,27 +1,4 @@
-/*
-Project Orleans Cloud Service SDK ver. 1.0
- 
-Copyright (c) Microsoft Corporation
- 
-All rights reserved.
- 
-MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and 
-associated documentation files (the ""Software""), to deal in the Software without restriction,
-including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
-OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
-
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -39,12 +16,15 @@ namespace Orleans.Runtime.Configuration
     {
         private IDictionary<string, string> properties;
         private readonly IList<ProviderConfiguration> childConfigurations = new List<ProviderConfiguration>();
+        [NonSerialized]
         private IList<IProvider> childProviders;
         [NonSerialized]
         private IProviderManager providerManager;
 
         public string Type { get; private set; }
         public string Name { get; private set; }
+        public IProviderManager ProviderManager {get { return providerManager; } }
+
 
         private ReadOnlyDictionary<string, string> readonlyCopyOfProperties;
         /// <summary>
@@ -69,7 +49,7 @@ namespace Orleans.Runtime.Configuration
 
         public ProviderConfiguration(IDictionary<string, string> properties, string providerType, string name)
         {
-            this.properties = properties;
+            this.properties = properties ?? new Dictionary<string, string>(1);
             Type = providerType;
             Name = name;
         }
@@ -77,7 +57,7 @@ namespace Orleans.Runtime.Configuration
         // for testing purposes
         internal ProviderConfiguration(IDictionary<string, string> properties, IList<IProvider> childProviders)
         {
-            this.properties = properties;
+            this.properties = properties ?? new Dictionary<string, string>(1);
             this.childProviders = childProviders;
         }
 
@@ -348,16 +328,6 @@ namespace Orleans.Runtime.Configuration
         internal static IEnumerable<IProviderConfiguration> GetAllProviderConfigurations(IDictionary<string, ProviderCategoryConfiguration> providerConfigurations)
         {
             return providerConfigurations.Values.SelectMany(category => category.Providers.Values);
-        }
-
-        internal static void AdjustConfiguration(IDictionary<string, ProviderCategoryConfiguration> providerConfigurations, string deploymentId)
-        {
-            if (String.IsNullOrEmpty(deploymentId)) return;
-
-            foreach (ProviderCategoryConfiguration providerCategoryConfig in providerConfigurations.Where(kv => kv.Key.Equals(ProviderCategoryConfiguration.STREAM_PROVIDER_CATEGORY_NAME)).Select(kv => kv.Value))
-            {
-                providerCategoryConfig.SetConfiguration("DeploymentId", deploymentId);
-            }
         }
 
         internal static string PrintProviderConfigurations(IDictionary<string, ProviderCategoryConfiguration> providerConfigurations)

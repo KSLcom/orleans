@@ -1,30 +1,4 @@
-/*
-Project Orleans Cloud Service SDK ver. 1.0
- 
-Copyright (c) Microsoft Corporation
- 
-All rights reserved.
- 
-MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and 
-associated documentation files (the ""Software""), to deal in the Software without restriction,
-including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
-OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
-
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+using System;
 
 namespace Orleans.CodeGeneration
 {
@@ -32,62 +6,70 @@ namespace Orleans.CodeGeneration
     /// For internal (run-time) use only.
     /// Base class of all the activation attributes 
     /// </summary>
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Performance", "CA1813:AvoidUnsealedAttributes"), AttributeUsage(System.AttributeTargets.All)]
+    [AttributeUsage(System.AttributeTargets.All)]
     public abstract class GeneratedAttribute : Attribute
     {
         /// <summary>
-        /// Type for which this activation is implemented
+        /// Initializes a new instance of the <see cref="GeneratedAttribute"/> class.
         /// </summary>
-        public string ForGrainType { get; protected set; }
+        /// <param name="targetType">The type which this implementation applies to.</param>
+        protected GeneratedAttribute(Type targetType)
+        {
+            this.TargetType = targetType;
+        }
 
         /// <summary>
+        /// Gets the type which this implementation applies to.
         /// </summary>
-        /// <param name="forGrainType">type argument</param>
-        protected GeneratedAttribute(string forGrainType)
-        {
-            ForGrainType = forGrainType;
-        }
-        /// <summary>
-        /// </summary>
-        protected GeneratedAttribute() { }
+        public Type TargetType { get; }
     }
-    
-    [AttributeUsage(System.AttributeTargets.Class)]
-    public sealed class GrainStateAttribute : GeneratedAttribute
-    {
-        /// <summary>
-        /// </summary>
-        /// <param name="forGrainType">type argument</param>
-        public GrainStateAttribute(string forGrainType)
-        {
-            ForGrainType = forGrainType;
-        }
-    }
-    
+
+    /// <summary>
+    /// Identifies a class that knows how to map the messages targeting a specifies interface ID to a grain (CLR) interface.
+    /// </summary>
     [AttributeUsage(System.AttributeTargets.Class)]
     public sealed class MethodInvokerAttribute : GeneratedAttribute
     {
-        /// <summary>
-        /// </summary>
-        /// <param name="forGrainType">type argument</param>
-        public MethodInvokerAttribute(string forGrainType, int interfaceId)
+        /// <summary>Initializes a new instance of the <see cref="MethodInvokerAttribute"/> class.</summary>
+        /// <param name="targetType">The grain implementation type</param>
+        /// <param name="interfaceId">The ID assigned to the interface by Orleans</param>
+        public MethodInvokerAttribute(Type targetType, int interfaceId)
+            : base(targetType)
         {
-            ForGrainType = forGrainType;
             InterfaceId = interfaceId;
         }
 
-        public int InterfaceId { get; private set; }
+        /// <summary>Gets the ID assigned to the interface by Orleans</summary>
+        public int InterfaceId { get; }
     }
-    
+
+    /// <summary>Identifies a concrete grain reference to an interface ID</summary>
     [AttributeUsage(System.AttributeTargets.Class)]
     public sealed class GrainReferenceAttribute : GeneratedAttribute
     {
         /// <summary>
+        /// Initializes a new instance of the <see cref="GrainReferenceAttribute"/> class.
         /// </summary>
-        /// <param name="forGrainType">type argument</param>
-        public GrainReferenceAttribute(string forGrainType)
+        /// <param name="targetType">The type which this implementation applies to.</param>
+        public GrainReferenceAttribute(Type targetType)
+            : base(targetType)
         {
-            ForGrainType = forGrainType;
+        }
+    }
+
+    /// <summary>
+    /// Identifies a class that contains all the serializer methods for a type.
+    /// </summary>
+    [AttributeUsage(System.AttributeTargets.Class)]
+    public sealed class SerializerAttribute : GeneratedAttribute
+    {
+        /// <summary>
+        /// Initializes a new instance of the <see cref="SerializerAttribute"/> class.
+        /// </summary>
+        /// <param name="targetType">The type that this implementation can serialize.</param>
+        public SerializerAttribute(Type targetType)
+            : base(targetType)
+        {
         }
     }
 }

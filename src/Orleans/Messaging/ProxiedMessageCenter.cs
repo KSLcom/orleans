@@ -1,34 +1,12 @@
-﻿/*
-Project Orleans Cloud Service SDK ver. 1.0
- 
-Copyright (c) Microsoft Corporation
- 
-All rights reserved.
- 
-MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and 
-associated documentation files (the ""Software""), to deal in the Software without restriction,
-including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense,
-and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED *AS IS*, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO
-THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS
-OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
-TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-*/
-
 using System;
+using System.CodeDom;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
-
 using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
 
@@ -91,9 +69,7 @@ namespace Orleans.Messaging
         internal bool Running { get; private set; }
 
         internal readonly GatewayManager GatewayManager;
-        internal readonly RuntimeQueue<Message> PendingInboundMessages;
-        private readonly MethodInfo registrarGetSystemTarget;
-        private readonly MethodInfo typeManagerGetSystemTarget;
+        internal readonly BlockingCollection<Message> PendingInboundMessages;
         private readonly Dictionary<Uri, GatewayConnection> gatewayConnections;
         private int numMessages;
         // The grainBuckets array is used to select the connection to use when sending an ordered message to a grain.
@@ -102,7 +78,7 @@ namespace Orleans.Messaging
         // if the WeakReference is non-null, is alive, and points to a live gateway connection. If any of these conditions is
         // false, then a new gateway is selected using the gateway manager, and a new connection established if necessary.
         private readonly WeakReference[] grainBuckets;
-        private readonly TraceLogger logger;
+        private readonly Logger logger;
         private readonly object lockable;
         public SiloAddress MyAddress { get; private set; }
         public IMessagingConfiguration MessagingConfiguration { get; private set; }
@@ -116,13 +92,11 @@ namespace Orleans.Messaging
             Running = false;
             MessagingConfiguration = config;
             GatewayManager = new GatewayManager(config, gatewayListProvider);
-            PendingInboundMessages = new RuntimeQueue<Message>();
-            registrarGetSystemTarget = GrainClient.GetStaticMethodThroughReflection("Orleans", "Orleans.Runtime.ClientObserverRegistrarFactory", "GetSystemTarget", null);
-            typeManagerGetSystemTarget = GrainClient.GetStaticMethodThroughReflection("Orleans", "Orleans.Runtime.TypeManagerFactory", "GetSystemTarget", null);
+            PendingInboundMessages = new BlockingCollection<Message>();
             gatewayConnections = new Dictionary<Uri, GatewayConnection>();
             numMessages = 0;
             grainBuckets = new WeakReference[config.ClientSenderBuckets];
-            logger = TraceLogger.GetLogger("Messaging.ProxiedMessageCenter", TraceLogger.LoggerType.Runtime);
+            logger = LogManager.GetLogger("Messaging.ProxiedMessageCenter", LoggerType.Runtime);
             if (logger.IsVerbose) logger.Verbose("Proxy grain client constructed");
             IntValueStatistic.FindOrCreate(StatisticNames.CLIENT_CONNECTED_GATEWAY_COUNT, () =>
                 {
@@ -155,6 +129,11 @@ namespace Orleans.Messaging
         public void Stop()
         {
             Running = false;
+            
+            Utils.SafeExecute(() =>
+            {
+                PendingInboundMessages.CompleteAdding();
+            });
 
             if (StatisticsCollector.CollectQueueStats)
             {
@@ -201,7 +180,7 @@ namespace Orleans.Messaging
                 {
                     int msgNumber = numMessages;
                     numMessages = unchecked(numMessages + 1);
-                    List<Uri> gatewayNames = GatewayManager.GetLiveGateways();
+                    IList<Uri> gatewayNames = GatewayManager.GetLiveGateways();
                     int numGateways = gatewayNames.Count;
                     if (numGateways == 0)
                     {
@@ -288,7 +267,7 @@ namespace Orleans.Messaging
         {
             if (msg.TargetSilo != null)
             {
-                RejectMessage(msg, "Target silo is unavailable");
+                RejectMessage(msg, String.Format("Target silo {0} is unavailable", msg.TargetSilo));
             }
             else
             {
@@ -296,16 +275,16 @@ namespace Orleans.Messaging
             }
         }
 
-        public Task<GrainInterfaceMap> GetTypeCodeMap()
+        public Task<IGrainTypeResolver> GetTypeCodeMap(GrainFactory grainFactory)
         {
             var silo = GetLiveGatewaySiloAddress();
-            return GetTypeManager(silo).GetTypeCodeMap(silo);
+            return GetTypeManager(silo, grainFactory).GetTypeCodeMap(silo);
         }
 
-        public Task<Streams.ImplicitStreamSubscriberTable> GetImplicitStreamSubscriberTable()
+        public Task<Streams.ImplicitStreamSubscriberTable> GetImplicitStreamSubscriberTable(GrainFactory grainFactory)
         {
             var silo = GetLiveGatewaySiloAddress();
-            return GetTypeManager(silo).GetImplicitStreamSubscriberTable(silo);
+            return GetTypeManager(silo, grainFactory).GetImplicitStreamSubscriberTable(silo);
         }
 
         [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Design", "CA1031:DoNotCatchGeneralExceptionTypes")]
@@ -313,6 +292,12 @@ namespace Orleans.Messaging
         {
             try
             {
+                if (ct.IsCancellationRequested)
+                {
+                    return null;
+                }
+
+                // Don't pass CancellationToken to Take. It causes too much spinning.
                 Message msg = PendingInboundMessages.Take();
 #if TRACK_DETAILED_STATS
                 if (StatisticsCollector.CollectQueueStats)
@@ -322,16 +307,28 @@ namespace Orleans.Messaging
 #endif
                 return msg;
             }
-            catch (ThreadAbortException tae)
+#if !NETSTANDARD
+            catch (ThreadAbortException exc)
             {
                 // Silo may be shutting-down, so downgrade to verbose log
-                logger.Verbose(ErrorCode.ProxyClient_ThreadAbort, "Received thread abort exception -- exiting. {0}", tae);
+                logger.Verbose(ErrorCode.ProxyClient_ThreadAbort, "Received thread abort exception -- exiting. {0}", exc);
                 Thread.ResetAbort();
                 return null;
             }
-            catch (OperationCanceledException oce)
+#endif
+            catch (OperationCanceledException exc)
             {
-                logger.Verbose(ErrorCode.ProxyClient_OperationCancelled, "Received operation cancelled exception -- exiting. {0}", oce);
+                logger.Verbose(ErrorCode.ProxyClient_OperationCancelled, "Received operation cancelled exception -- exiting. {0}", exc);
+                return null;
+            }
+            catch (ObjectDisposedException exc)
+            {
+                logger.Verbose(ErrorCode.ProxyClient_OperationCancelled, "Received Object Disposed exception -- exiting. {0}", exc);
+                return null;
+            }
+            catch (InvalidOperationException exc)
+            {
+                logger.Verbose(ErrorCode.ProxyClient_OperationCancelled, "Received Invalid Operation exception -- exiting. {0}", exc);
                 return null;
             }
             catch (Exception ex)
@@ -386,7 +383,7 @@ namespace Orleans.Messaging
             throw new NotImplementedException("Reconnect");
         }
 
-        #region Random IMessageCenter stuff
+#region Random IMessageCenter stuff
 
         public int SendQueueLength
         {
@@ -398,16 +395,11 @@ namespace Orleans.Messaging
             get { return 0; }
         }
 
-        #endregion
+#endregion
 
-        private IClientObserverRegistrar GetRegistrar(SiloAddress destination)
+        private ITypeManager GetTypeManager(SiloAddress destination, GrainFactory grainFactory)
         {
-            return (IClientObserverRegistrar)registrarGetSystemTarget.Invoke(null, new object[] { Constants.ClientObserverRegistrarId, destination });
-        }
-
-        private ITypeManager GetTypeManager(SiloAddress destination)
-        {
-            return (ITypeManager)typeManagerGetSystemTarget.Invoke(null, new object[] { Constants.TypeManagerId, destination });
+            return grainFactory.GetSystemTarget<ITypeManager>(Constants.TypeManagerId, destination);
         }
 
         private SiloAddress GetLiveGatewaySiloAddress()
@@ -420,6 +412,17 @@ namespace Orleans.Messaging
             }
 
             return gateway.ToSiloAddress();
+        }
+
+        internal void UpdateClientId(GrainId clientId)
+        {
+            if(ClientId.Category != UniqueKey.Category.Client)
+                throw new InvalidOperationException("Only handshake client ID can be updated with a cluster ID.");
+
+            if (clientId.Category != UniqueKey.Category.GeoClient)
+                throw new ArgumentException("Handshake client ID can only be updated  with a geo client.", nameof(clientId));
+
+            ClientId = clientId;
         }
     }
 }
