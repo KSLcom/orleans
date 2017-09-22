@@ -4,7 +4,7 @@ using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
 using Orleans.TestingHost;
 using Tester;
-using UnitTests.Tester;
+using TestExtensions;
 using Xunit;
 
 namespace UnitTests
@@ -16,7 +16,7 @@ namespace UnitTests
             this.HostedCluster = fixture.HostedCluster;
             if (!GrainClient.IsInitialized)
             {
-                this.HostedCluster.InitializeClient();
+                GrainClient.Initialize(fixture.HostedCluster.ClientConfiguration);
             }
         }
 

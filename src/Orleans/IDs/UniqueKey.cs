@@ -2,7 +2,6 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Text;
-using Orleans.Serialization;
 
 namespace Orleans.Runtime
 {
@@ -10,6 +9,7 @@ namespace Orleans.Runtime
     internal class UniqueKey : IComparable<UniqueKey>, IEquatable<UniqueKey>
     {
         private const ulong TYPE_CODE_DATA_MASK = 0xFFFFFFFF; // Lowest 4 bytes
+        private static readonly char[] KeyExtSeparationChar = {'+'};
 
         /// <summary>
         /// Type id values encoded into UniqueKeys
@@ -87,7 +87,7 @@ namespace Orleans.Runtime
                 return NewKey(guid);
             else
             {
-                var fields = trimmed.Split('+');
+                var fields = trimmed.Split(KeyExtSeparationChar, 2);
                 var n0 = ulong.Parse(fields[0].Substring(0, 16), NumberStyles.HexNumber);
                 var n1 = ulong.Parse(fields[0].Substring(16, 16), NumberStyles.HexNumber);
                 var typeCodeData = ulong.Parse(fields[0].Substring(32, 16), NumberStyles.HexNumber);
@@ -111,11 +111,6 @@ namespace Orleans.Runtime
 
         private static UniqueKey NewKey(ulong n0, ulong n1, Category category, long typeData, string keyExt)
         {
-            // in the string representation of a key, we grab the least significant half of n1.
-            // therefore, if n0 is non-zero and n1 is 0, then the string representation will always be
-            // 0x0 and not useful for identification of the grain.
-            if (n1 == 0 && n1 != 0)
-                throw new ArgumentException("n0 cannot be zero unless n1 is non-zero.", "n0");
             if (category != Category.KeyExtGrain && category != Category.GeoClient && keyExt != null)
                 throw new ArgumentException("Only key extended grains can specify a non-null key extension.");
 
@@ -159,6 +154,12 @@ namespace Orleans.Runtime
         {
             ulong n1 = unchecked((ulong)systemId);
             return NewKey(0, n1, Category.SystemTarget, 0, null);
+        }
+
+        public static UniqueKey NewGrainServiceKey(short key, long typeData)
+        {
+            ulong n1 = unchecked((ulong)key);
+            return NewKey(0, n1, Category.SystemTarget, typeData, null);
         }
 
         internal static UniqueKey NewKey(ulong n0, ulong n1, ulong typeCodeData, string keyExt)
@@ -274,18 +275,14 @@ namespace Orleans.Runtime
             // ReSharper disable NonReadonlyFieldInGetHashCode
             if (uniformHashCache == 0)
             {
-                JenkinsHash jenkinsHash = JenkinsHash.Factory.GetHashGenerator();
                 uint n;
                 if (HasKeyExt && KeyExt != null)
                 {
-                    var writer = new BinaryTokenStreamWriter();
-                    writer.Write(this);
-                    byte[] bytes = writer.ToByteArray();
-                    n = jenkinsHash.ComputeHash(bytes);
+                    n = JenkinsHash.ComputeHash(this.ToByteArray());
                 }
                 else
                 {
-                    n = jenkinsHash.ComputeHash(TypeCodeData, N0, N1);
+                    n = JenkinsHash.ComputeHash(TypeCodeData, N0, N1);
                 }
                 // Unchecked is required because the Jenkins hash is an unsigned 32-bit integer, 
                 // which we need to convert to a signed 32-bit integer.
@@ -293,6 +290,49 @@ namespace Orleans.Runtime
             }
             return uniformHashCache;
             // ReSharper restore NonReadonlyFieldInGetHashCode
+        }
+
+        internal byte[] ToByteArray()
+        {
+            byte[] bytes, extBytes = null;
+            var tmpArray = new ulong[1];
+            var offset = 0;
+            if (this.KeyExt != null)
+            {
+                extBytes = Encoding.UTF8.GetBytes(KeyExt);
+                // N0 + N1 + TypeCodeData + length(KeyExt in bytes) + KeyExt in bytes
+                bytes = new byte[sizeof(ulong) * 3 + sizeof(int) + extBytes.Length];
+            }
+            else
+            {
+                // N0 + N1 + TypeCodeData + length(-1)
+                bytes = new byte[sizeof(ulong) * 3 + sizeof(int)];
+            }
+            // Copy N0
+            tmpArray[0] = this.N0;
+            Buffer.BlockCopy(tmpArray, 0, bytes, offset, sizeof(ulong));
+            offset += sizeof(ulong);
+            // Copy N1
+            tmpArray[0] = this.N1;
+            Buffer.BlockCopy(tmpArray, 0, bytes, offset, sizeof(ulong));
+            offset += sizeof(ulong);
+            // Copy TypeCodeData
+            tmpArray[0] = this.TypeCodeData;
+            Buffer.BlockCopy(tmpArray, 0, bytes, offset, sizeof(ulong));
+            offset += sizeof(ulong);
+            // Copy KeyExt
+            if (extBytes != null)
+            {
+                Buffer.BlockCopy(new[] {extBytes.Length}, 0, bytes, offset, sizeof(int));
+                offset += sizeof(int);
+                Buffer.BlockCopy(extBytes, 0, bytes, offset, extBytes.Length);
+            }
+            else
+            {
+                Buffer.BlockCopy(new[] {-1}, 0, bytes, offset, sizeof(int));
+            }
+
+            return bytes;
         }
 
         private Guid ConvertToGuid()

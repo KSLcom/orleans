@@ -8,13 +8,14 @@ using Orleans;
 using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
 using Orleans.TestingHost;
+using TestExtensions;
 using UnitTests.GrainInterfaces;
 using Xunit;
 using Xunit.Abstractions;
 
 namespace UnitTests.General
 {
-    public class GrainPlacementTests : HostedTestClusterPerTest
+    public class GrainPlacementTests : TestClusterPerTest
     {
         private readonly ITestOutputHelper output;
 
@@ -24,32 +25,25 @@ namespace UnitTests.General
             output.WriteLine("GrainPlacementTests - constructor");
         }
 
-        public override TestingSiloHost CreateSiloHost()
+        public override TestCluster CreateTestCluster()
         {
-            return new TestingSiloHost(
-                new TestingSiloOptions
-                {
-                    StartFreshOrleans = true,
-                    SiloConfigFile = new FileInfo("OrleansConfigurationForTesting.xml")
-                }, new TestingClientOptions
-                {
-                    ProxiedGateway = true,
-                    Gateways = new List<IPEndPoint>(new[] { new IPEndPoint(IPAddress.Loopback, 40000), new IPEndPoint(IPAddress.Loopback, 40001) }),
-                    PreferedGatewayIndex = -1,
-                    ClientConfigFile = new FileInfo("ClientConfigurationForTesting.xml"),
-                });
+            var options = new TestClusterOptions();
+
+            options.ClusterConfiguration.AddMemoryStorageProvider("MemoryStore");
+            options.ClusterConfiguration.AddMemoryStorageProvider("Default");
+
+            return new TestCluster(options);
         }
-        
+
+
         [Fact, TestCategory("Placement"), TestCategory("Functional")]
         public async Task DefaultPlacementShouldBeRandom()
         {
-            await this.HostedCluster.WaitForLivenessToStabilizeAsync();
             logger.Info("********************** Starting the test DefaultPlacementShouldBeRandom ******************************");
             TestSilosStarted(2);
 
-            Assert.Equal(
-                RandomPlacement.Singleton,
-                PlacementStrategy.GetDefault());
+            var actual = await GrainFactory.GetGrain<IDefaultPlacementGrain>(GetRandomGrainId()).GetDefaultPlacement();
+            Assert.IsType<RandomPlacement>(actual);
         }
 
         [Fact, TestCategory("Placement"), TestCategory("Functional")]
@@ -60,13 +54,12 @@ namespace UnitTests.General
             TestSilosStarted(2);
 
             logger.Info("********************** TestSilosStarted passed OK. ******************************");
-
-            var placement = RandomPlacement.Singleton;
+            
             var grains =
                 Enumerable.Range(0, 20).
                 Select(
                     n =>
-                        GrainClient.GrainFactory.GetGrain<IRandomPlacementTestGrain>(Guid.NewGuid()));
+                        this.GrainFactory.GetGrain<IRandomPlacementTestGrain>(Guid.NewGuid()));
             var places = grains.Select(g => g.GetRuntimeInstanceId().Result);
             var placesAsArray = places as string[] ?? places.ToArray();
             // consider: it seems like we should check that we get close to a 50/50 split for placement.
@@ -110,7 +103,7 @@ namespace UnitTests.General
                 Enumerable.Range(0, numGrains).
                     Select(
                         n =>
-                            GrainClient.GrainFactory.GetGrain<IRandomPlacementTestGrain>(Guid.NewGuid())).ToList();
+                            this.GrainFactory.GetGrain<IRandomPlacementTestGrain>(Guid.NewGuid())).ToList();
             var randomGrainPlaces = randomGrains.Select(g => g.GetRuntimeInstanceId().Result).ToList();
 
             var preferLocalGrainKeys =
@@ -118,7 +111,7 @@ namespace UnitTests.General
                     Select(
                         (IRandomPlacementTestGrain g) =>
                             g.StartPreferLocalGrain(g.GetPrimaryKey()).Result).ToList();
-            var preferLocalGrainPlaces = preferLocalGrainKeys.Select(key => GrainClient.GrainFactory.GetGrain<IPreferLocalPlacementTestGrain>(key).GetRuntimeInstanceId().Result).ToList();
+            var preferLocalGrainPlaces = preferLocalGrainKeys.Select(key => this.GrainFactory.GetGrain<IPreferLocalPlacementTestGrain>(key).GetRuntimeInstanceId().Result).ToList();
 
             // check that every "prefer local grain" was placed on the same silo with its requesting random grain
             foreach(int key in Enumerable.Range(0, numGrains))
@@ -152,7 +145,7 @@ namespace UnitTests.General
         }
 
         //[Fact, TestCategory("Placement"), TestCategory("Functional")]
-        public async Task LocallyPlacedGrainShouldCreateSpecifiedNumberOfMultipleActivations()
+        /*public async Task LocallyPlacedGrainShouldCreateSpecifiedNumberOfMultipleActivations()
         {
             await this.HostedCluster.WaitForLivenessToStabilizeAsync();
             logger.Info("********************** Starting the test LocallyPlacedGrainShouldCreateSpecifiedNumberOfMultipleActivations ******************************");
@@ -161,10 +154,10 @@ namespace UnitTests.General
             // note: this amount should agree with both the specified minimum and maximum in the StatelessWorkerPlacement attribute
             // associated with ILocalPlacementTestGrain.
             const int expected = 10;
-            var grain = GrainClient.GrainFactory.GetGrain<ILocalPlacementTestGrain>(Guid.Empty);
+            var grain = this.GrainFactory.GetGrain<ILocalPlacementTestGrain>(Guid.Empty);
             int actual = ActivationCount(grain, expected * 5);
             Assert.Equal(expected, actual);  //"A grain instantiated with the local placement strategy should create multiple activations acording to the parameterization of the strategy."
-        }
+        }*/
 
         [Fact, TestCategory("Placement"), TestCategory("Functional")]
         public async Task LocallyPlacedGrainShouldCreateActivationsOnLocalSilo()
@@ -175,7 +168,7 @@ namespace UnitTests.General
 
             const int sampleSize = 5;
             var placement = new StatelessWorkerPlacement(sampleSize);
-            var proxy = GrainClient.GrainFactory.GetGrain<IRandomPlacementTestGrain>(Guid.NewGuid());
+            var proxy = this.GrainFactory.GetGrain<IRandomPlacementTestGrain>(Guid.NewGuid());
             await proxy.StartLocalGrains(new List<Guid> { Guid.Empty });
             var expected = await proxy.GetEndpoint();
             // locally placed grains are multi-activation and stateless. this means that we have to sample the value of
@@ -211,7 +204,7 @@ namespace UnitTests.General
             }
             else
             {
-                targetSilo = HostedCluster.Secondary.SiloAddress.Endpoint;
+                targetSilo = HostedCluster.SecondarySilos.First().SiloAddress.Endpoint;
             }
             Guid proxyKey;
             IRandomPlacementTestGrain proxy;
@@ -266,7 +259,7 @@ namespace UnitTests.General
             }
             else
             {
-                targetSilo = HostedCluster.Secondary.SiloAddress.Endpoint;
+                targetSilo = HostedCluster.SecondarySilos.First().SiloAddress.Endpoint;
             }
             Guid proxyKey;
             IRandomPlacementTestGrain proxy;
@@ -293,6 +286,21 @@ namespace UnitTests.General
             IPEndPoint newActual = await grain.GetEndpoint();
             output.WriteLine("PreferLocalPlacement grain is now located on silo {0}", newActual);
             Assert.Equal(expected, newActual);  // "PreferLocalPlacement strategy should not move activations when other non-hosting silo fails."
+        }
+
+        private void TestSilosStarted(int expected)
+        {
+            IManagementGrain mgmtGrain = GrainFactory.GetGrain<IManagementGrain>(0);
+
+            Dictionary<SiloAddress, SiloStatus> statuses = mgmtGrain.GetHosts(onlyActive: true).Result;
+            foreach (var pair in statuses)
+            {
+                logger.Info("       ######## Silo {0}, status: {1}", pair.Key, pair.Value);
+                Assert.Equal(
+                    SiloStatus.Active,
+                    pair.Value);
+            }
+            Assert.Equal(expected, statuses.Count);
         }
     }
 }

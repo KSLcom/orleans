@@ -1,15 +1,32 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using Orleans.Runtime;
+using System;
+using Orleans.Providers;
 
 namespace Orleans.Streams
 {
     /// <summary>
     /// The stream queue balancer is responsible for load balancing queues across all other related queue balancers.  It
     /// notifies any listeners (<code>IStreamQueueBalanceListener</code>) of changes to the distribution of queues.
+    /// Method GetMyQueues, SubscribeToQueueDistributionChangeEvents, and UnSubscribeFromQueueDistributionChangeEvents will 
+    /// likely be called in the IStreamQueueBalanceListener's thread so they need to be thread safe
     /// </summary>
-    internal interface IStreamQueueBalancer
+    public interface IStreamQueueBalancer
     {
+        /// <summary>
+        /// Initialize this instance
+        /// </summary>
+        /// <param name="strProviderName"></param>
+        /// <param name="queueMapper"></param>
+        /// <param name="siloMaturityPeriod"></param>
+        /// <param name="providerConfig">Provider configuration for current stream provider</param>
+        /// <returns></returns>
+        Task Initialize(string strProviderName,
+            IStreamQueueMapper queueMapper,
+            TimeSpan siloMaturityPeriod,
+            IProviderConfiguration providerConfig);
+
         /// <summary>
         /// Retrieves the latest queue distribution for this balancer.
         /// </summary>
@@ -28,7 +45,7 @@ namespace Orleans.Streams
         /// </summary>
         /// <param name="observer">An observer interface to receive queue distribution change notifications.</param>
         /// <returns>Bool value indicating that unsubscription succeeded or not</returns>
-        bool UnSubscribeToQueueDistributionChangeEvents(IStreamQueueBalanceListener observer);
+        bool UnSubscribeFromQueueDistributionChangeEvents(IStreamQueueBalanceListener observer);
     }
 
     /// <summary>
@@ -37,7 +54,7 @@ namespace Orleans.Streams
     /// It should be implemented by components interested in stream queue load balancing.
     /// When change notification is received, listener should request updated list of queues from the queue balancer.
     /// </summary>
-    internal interface IStreamQueueBalanceListener : IAddressable
+    public interface IStreamQueueBalanceListener
     {
         /// <summary>
         /// Receive notifications about adapter queue responsibility changes. 

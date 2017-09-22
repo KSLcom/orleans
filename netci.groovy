@@ -4,27 +4,37 @@ import jobs.generation.Utilities;
 
 def project = GithubProject
 def branch = GithubBranchName
-// Define build string
-def buildString = '''call Build.cmd && Test.cmd'''
-
-// Generate the builds for debug and release
 
 [true, false].each { isPR ->
-    def newJob = job(Utilities.getFullJobName(project, '', isPR)) {
-        steps {
-            batchFile(buildString)
+    ['bvt', 'functional'].each { testCategory ->
+        def newJobName = "${testCategory}"
+        def testScript = "Test.cmd";
+        if (testCategory == 'functional') { testScript = "TestAll.cmd" }
+
+        def newJob = job(Utilities.getFullJobName(project, newJobName, isPR)) {
+            steps {
+                batchFile("call Build.cmd && SET OrleansDataConnectionString= && ${testScript}")
+            }
         }
-    }
-    
-    Utilities.setMachineAffinity(newJob, 'Windows_NT', 'latest-or-auto')
-    Utilities.standardJobSetup(newJob, project, isPR, "*/${branch}")
-    Utilities.addXUnitDotNETResults(newJob, '**/xUnit-Results*.xml')
-    // Archive only on commit builds.
-    if (!isPR) {
-        Utilities.addArchival(newJob, 'Binaries/**')
-        Utilities.addGithubPushTrigger(newJob)
-    }
-    else {
-        Utilities.addGithubPRTriggerForBranch(newJob, branch, "Windows Debug and Release")
+
+        // need to use a machine that has .NET 4.6.2 installed in the system for now.
+        Utilities.setMachineAffinity(newJob, 'Windows_NT', 'latest-or-auto')
+
+        Utilities.standardJobSetup(newJob, project, isPR, "*/${branch}")
+        Utilities.addXUnitDotNETResults(newJob, '**/xUnit-Results*.xml')
+        // Archive only on commit builds.
+        if (!isPR) {
+            if (testCategory == 'bvt') {
+                // no reason to archive for every kind of test run
+                Utilities.addArchival(newJob, '**/Binaries/**')
+            }
+            Utilities.addGithubPushTrigger(newJob)
+        }
+        else {
+            Utilities.addGithubPRTriggerForBranch(newJob, branch, newJobName)
+        }
+
+        // args: archive *.binlog, don't exclude anything, don't fail if there are no files, archive in case of failure too
+        Utilities.addArchival(newJob, '*.binlog', '', true, false)
     }
 }

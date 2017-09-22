@@ -85,12 +85,14 @@ namespace Orleans.Runtime.Scheduler
         }
 
         internal readonly int WorkerThreadStatisticsNumber;
+        private readonly ICorePerformanceMetrics performanceMetrics;
 
-        internal WorkerPoolThread(WorkerPool gtp, OrleansTaskScheduler sched, int threadNumber, bool system = false)
+        internal WorkerPoolThread(WorkerPool gtp, OrleansTaskScheduler sched, ICorePerformanceMetrics performanceMetrics, int threadNumber, bool system = false)
             : base((system ? "System." : "") + threadNumber)
         {
             pool = gtp;
             scheduler = sched;
+            this.performanceMetrics = performanceMetrics;
             ownsSemaphore = false;
             IsSystem = system;
             maxWorkQueueWait = IsSystem ? Constants.INFINITE_TIMESPAN : gtp.MaxWorkQueueWait;
@@ -175,7 +177,6 @@ namespace Orleans.Runtime.Scheduler
 #endif
                                 todo.Execute();
                             }
-#if !NETSTANDARD
                             catch (ThreadAbortException ex)
                             {
                                 // The current turn was aborted (indicated by the exception state being set to true).
@@ -185,7 +186,6 @@ namespace Orleans.Runtime.Scheduler
                                 else
                                     Log.Error(ErrorCode.Runtime_Error_100029, "Caught thread abort exception, allowing it to propagate outwards", ex);
                             }
-#endif
                             catch (Exception ex)
                             {
                                 var errorStr = String.Format("Worker thread caught an exception thrown from task {0}.", todo);
@@ -231,7 +231,6 @@ namespace Orleans.Runtime.Scheduler
                             noWorkCount++;
                         }
                     }
-#if !NETSTANDARD
                     catch (ThreadAbortException tae)
                     {
                         // Can be reported from RunQueue.Get when Silo is being shutdown, so downgrade to verbose log
@@ -239,7 +238,6 @@ namespace Orleans.Runtime.Scheduler
                         Thread.ResetAbort();
                         break;
                     }
-#endif
                     catch (Exception ex)
                     {
                         Log.Error(ErrorCode.Runtime_Error_100031, "Exception bubbled up to worker thread", ex);
@@ -328,7 +326,7 @@ namespace Orleans.Runtime.Scheduler
             // Note that we only do this if the current load is reasonably low and the current thread
             // count is reasonably small.
             if (!pool.ShouldInjectWorkerThread ||
-                (Silo.CurrentSilo == null || !(Silo.CurrentSilo.Metrics.CpuUsage < MAX_CPU_USAGE_TO_REPLACE))) return;
+                !(this.performanceMetrics.CpuUsage < MAX_CPU_USAGE_TO_REPLACE)) return;
 
             if (Cts.IsCancellationRequested) return;
 

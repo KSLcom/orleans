@@ -11,14 +11,16 @@ namespace Orleans.CodeGeneration
     {
         /// <summary> InterfaceId for this Invoke request. </summary>
         public int InterfaceId { get; private set; }
+        public ushort InterfaceVersion { get; private set; }
         /// <summary> MethodId for this Invoke request. </summary>
         public int MethodId { get; private set; }
         /// <summary> Arguments for this Invoke request. </summary>
         public object[] Arguments { get; private set; }
 
-        internal InvokeMethodRequest(int interfaceId, int methodId, object[] arguments)
+        internal InvokeMethodRequest(int interfaceId, ushort interfaceVersion, int methodId, object[] arguments)
         {
             InterfaceId = interfaceId;
+            InterfaceVersion = interfaceVersion;
             MethodId = methodId;
             Arguments = arguments;
         }
@@ -62,5 +64,10 @@ namespace Orleans.CodeGeneration
 
         /// <summary>The invocation can interleave with any other request type, including write requests.</summary>
         AlwaysInterleave = 0x100,
+
+        // Transactional method options. 
+        // NOTE: keep in sync with TransactionOption enum.
+        TransactionRequired = 0x200,
+        TransactionRequiresNew = 0x400,
     }
 }

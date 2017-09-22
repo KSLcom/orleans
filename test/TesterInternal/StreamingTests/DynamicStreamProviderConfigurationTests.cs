@@ -12,15 +12,17 @@ using Orleans.TestingHost;
 using Orleans.TestingHost.Utils;
 using Tester;
 using Tester.TestStreamProviders;
+using TestExtensions;
 using TestGrainInterfaces;
 using TestGrains;
 using UnitTests.Grains;
-using UnitTests.Tester;
 using Xunit;
 
 namespace UnitTests.StreamingTests
 {
-    // if we paralellize tests, this should run in isolation 
+    using Orleans.Runtime.TestHooks;
+
+    // if we parallelize tests, each test should run in isolation 
     public class DynamicStreamProviderConfigurationTests : OrleansTestingBase, IClassFixture<DynamicStreamProviderConfigurationTests.Fixture>, IDisposable
     {
         private readonly Fixture fixture;
@@ -54,7 +56,7 @@ namespace UnitTests.StreamingTests
                 GeneratorConfig.WriteProperties(DefaultStreamProviderSettings);
 
                 // add queue balancer setting
-                DefaultStreamProviderSettings.Add(PersistentStreamProviderConfig.QUEUE_BALANCER_TYPE, StreamQueueBalancerType.DynamicClusterConfigDeploymentBalancer.ToString());
+                DefaultStreamProviderSettings.Add(PersistentStreamProviderConfig.QUEUE_BALANCER_TYPE, StreamQueueBalancerType.DynamicClusterConfigDeploymentBalancer.AssemblyQualifiedName);
 
                 // add pub/sub settting
                 DefaultStreamProviderSettings.Add(PersistentStreamProviderConfig.STREAM_PUBSUB_TYPE, StreamPubSubType.ImplicitOnly.ToString());
@@ -78,11 +80,11 @@ namespace UnitTests.StreamingTests
         public async Task DynamicStreamProviderConfigurationTests_AddAndRemoveProvidersAndCheckCounters()
         {
             //Making sure the initial provider list is empty.
-            List<string> providerNames = fixture.HostedCluster.Primary.TestHook.GetStreamProviderNames().ToList();
-            Assert.Equal(0, providerNames.Count);
+            List<string> providerNames = (await this.GetPrimarySiloTestHooks().GetStreamProviderNames()).ToList();
+            Assert.Empty(providerNames);
 
             providerNames = new List<string>(new [] { GeneratedStreamTestConstants.StreamProviderName });
-            var reporter = GrainClient.GrainFactory.GetGrain<IGeneratedEventReporterGrain>(GeneratedStreamTestConstants.ReporterId);
+            var reporter = this.fixture.GrainFactory.GetGrain<IGeneratedEventReporterGrain>(GeneratedStreamTestConstants.ReporterId);
             try
             {
                 await AddGeneratorStreamProviderAndVerify(providerNames);
@@ -99,11 +101,16 @@ namespace UnitTests.StreamingTests
             }
         }
 
+        private ITestHooks GetPrimarySiloTestHooks()
+        {
+            return this.GetTestHook(this.fixture.HostedCluster.Primary);
+        }
+
         [Fact, TestCategory("Functional"), TestCategory("Streaming"), TestCategory("Providers")]
         public async Task DynamicStreamProviderConfigurationTests_AddAndRemoveProvidersInBatch()
         {
             //Making sure the initial provider list is empty.
-            List<string> providerNames = fixture.HostedCluster.Primary.TestHook.GetStreamProviderNames().ToList();
+            ICollection<string> providerNames = await this.GetPrimarySiloTestHooks().GetStreamProviderNames();
             Assert.Equal(0, providerNames.Count);
 
             providerNames = new List<string>(new[]
@@ -126,7 +133,7 @@ namespace UnitTests.StreamingTests
         public async Task DynamicStreamProviderConfigurationTests_AddAndRemoveProvidersIndividually()
         {
             //Making sure the initial provider list is empty.
-            List<string> providerNames = fixture.HostedCluster.Primary.TestHook.GetStreamProviderNames().ToList();
+            ICollection<string> providerNames = await this.GetPrimarySiloTestHooks().GetStreamProviderNames();
             Assert.Equal(0, providerNames.Count);
 
             providerNames = new List<string>(new[] { GeneratedStreamTestConstants.StreamProviderName });
@@ -168,7 +175,7 @@ namespace UnitTests.StreamingTests
         public async Task DynamicStreamProviderConfigurationTests_AddProvidersAndThrowExceptionOnInitialization()
         {
             //Making sure the initial provider list is empty.
-            List<string> providerNames = fixture.HostedCluster.Primary.TestHook.GetStreamProviderNames().ToList();
+            ICollection<string> providerNames = await this.GetPrimarySiloTestHooks().GetStreamProviderNames();
             Assert.Equal(0, providerNames.Count);
 
             Dictionary<string, string> providerSettings =
@@ -189,7 +196,7 @@ namespace UnitTests.StreamingTests
         public async Task DynamicStreamProviderConfigurationTests_AddProvidersAndThrowExceptionOnStart()
         {
             //Making sure the initial provider list is empty.
-            List<string> providerNames = fixture.HostedCluster.Primary.TestHook.GetStreamProviderNames().ToList();
+            ICollection<string> providerNames = await this.GetPrimarySiloTestHooks().GetStreamProviderNames();
             Assert.Equal(0, providerNames.Count);
             Dictionary<string, string> providerSettings =
                 new Dictionary<string, string>(fixture.DefaultStreamProviderSettings)
@@ -206,13 +213,13 @@ namespace UnitTests.StreamingTests
 
         private async Task RemoveAllProviders()
         {
-            List<string> providerNames = fixture.HostedCluster.Primary.TestHook.GetStreamProviderNames().ToList();
+            ICollection<string> providerNames = await this.GetPrimarySiloTestHooks().GetStreamProviderNames();
             await RemoveProvidersAndVerify(providerNames);
-            providerNames = fixture.HostedCluster.Primary.TestHook.GetStreamProviderNames().ToList();
+            providerNames = await this.GetPrimarySiloTestHooks().GetStreamProviderNames();
             Assert.Equal(0, providerNames.Count);
         }
 
-        private async Task AddFailureInjectionStreamProviderAndVerify(List<string> streamProviderNames, Dictionary<string, string> ProviderSettings)
+        private async Task AddFailureInjectionStreamProviderAndVerify(ICollection<string> streamProviderNames, Dictionary<string, string> ProviderSettings)
         {
             foreach (string providerName in streamProviderNames)
             {
@@ -221,7 +228,7 @@ namespace UnitTests.StreamingTests
             await AddProvidersAndVerify(streamProviderNames);
         }
 
-        private async Task AddGeneratorStreamProviderAndVerify(List<string> streamProviderNames)
+        private async Task AddGeneratorStreamProviderAndVerify(ICollection<string> streamProviderNames)
         {
             foreach (string providerName in streamProviderNames)
             {
@@ -230,10 +237,10 @@ namespace UnitTests.StreamingTests
             await AddProvidersAndVerify(streamProviderNames);
         }
 
-        private async Task AddProvidersAndVerify(List<string> streamProviderNames)
+        private async Task AddProvidersAndVerify(ICollection<string> streamProviderNames)
         {
-            mgmtGrain = GrainClient.GrainFactory.GetGrain<IManagementGrain>(0);
-            List<string> names = fixture.HostedCluster.Primary.TestHook.GetStreamProviderNames().ToList();
+            this.mgmtGrain = this.fixture.GrainFactory.GetGrain<IManagementGrain>(0);
+            ICollection<string> names = await this.GetPrimarySiloTestHooks().GetStreamProviderNames();
 
             IDictionary<string, bool> hasNewProvider = new Dictionary<string, bool>();
 
@@ -241,8 +248,8 @@ namespace UnitTests.StreamingTests
             SiloAddress[] address = new SiloAddress[1];
             address[0] = fixture.HostedCluster.Primary.SiloAddress;
             await mgmtGrain.UpdateStreamProviders(address, fixture.HostedCluster.ClusterConfiguration.Globals.ProviderConfigurations);
-            names = fixture.HostedCluster.Primary.TestHook.GetStreamProviderNames().ToList();
-            List<string> allSiloProviderNames = fixture.HostedCluster.Primary.TestHook.GetAllSiloProviderNames().ToList();
+            names = await this.GetPrimarySiloTestHooks().GetStreamProviderNames();
+            ICollection<string> allSiloProviderNames = await this.GetPrimarySiloTestHooks().GetAllSiloProviderNames();
             Assert.Equal(names.Count - count, streamProviderNames.Count);
             Assert.Equal(allSiloProviderNames.Count, names.Count);
             foreach (string name in names)
@@ -268,10 +275,10 @@ namespace UnitTests.StreamingTests
             Assert.Equal(hasNewProvider.Count, streamProviderNames.Count);
         }
 
-        private async Task RemoveProvidersAndVerify(List<string> streamProviderNames)
+        private async Task RemoveProvidersAndVerify(ICollection<string> streamProviderNames)
         {
-            mgmtGrain = GrainClient.GrainFactory.GetGrain<IManagementGrain>(0);
-            List<string> names = fixture.HostedCluster.Primary.TestHook.GetStreamProviderNames().ToList();
+            this.mgmtGrain = this.fixture.GrainFactory.GetGrain<IManagementGrain>(0);
+            ICollection<string> names = await this.GetTestHook(fixture.HostedCluster.Primary).GetStreamProviderNames();
             int Count = names.Count;
             foreach (string name in streamProviderNames)
             {
@@ -282,8 +289,8 @@ namespace UnitTests.StreamingTests
             SiloAddress[] address = new SiloAddress[1];
             address[0] = fixture.HostedCluster.Primary.SiloAddress;
             await mgmtGrain.UpdateStreamProviders(address, fixture.HostedCluster.ClusterConfiguration.Globals.ProviderConfigurations);
-            names = fixture.HostedCluster.Primary.TestHook.GetStreamProviderNames().ToList();
-            List<string> allSiloProviderNames = fixture.HostedCluster.Primary.TestHook.GetAllSiloProviderNames().ToList();
+            names = await this.GetPrimarySiloTestHooks().GetStreamProviderNames();
+            ICollection<string> allSiloProviderNames = await this.GetPrimarySiloTestHooks().GetAllSiloProviderNames();
             Assert.Equal(Count - names.Count, streamProviderNames.Count);
             Assert.Equal(allSiloProviderNames.Count, names.Count);
             foreach (String name in streamProviderNames)
@@ -298,7 +305,7 @@ namespace UnitTests.StreamingTests
 
         private async Task<bool> CheckCounters(bool assertIsTrue)
         {
-            var reporter = GrainClient.GrainFactory.GetGrain<IGeneratedEventReporterGrain>(GeneratedStreamTestConstants.ReporterId);
+            var reporter = this.fixture.GrainFactory.GetGrain<IGeneratedEventReporterGrain>(GeneratedStreamTestConstants.ReporterId);
 
             var report = await reporter.GetReport(GeneratedStreamTestConstants.StreamProviderName, Fixture.StreamNamespace);
             if (assertIsTrue)
@@ -316,6 +323,11 @@ namespace UnitTests.StreamingTests
                 return false;
             }
             return true;
+        }
+
+        private ITestHooks GetTestHook(SiloHandle silo)
+        {
+            return this.fixture.Client.GetTestHooks(silo);
         }
     }
 }

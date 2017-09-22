@@ -6,28 +6,33 @@ using Orleans;
 using Orleans.Runtime;
 using Orleans.TestingHost;
 using UnitTests.GrainInterfaces;
-using UnitTests.Tester;
 using Xunit;
+using Tester;
+using TestExtensions;
 
 namespace UnitTests.General
 {
     public class DeadlockDetectionTests : OrleansTestingBase, IClassFixture<DeadlockDetectionTests.Fixture>
     {
-        private class Fixture : BaseClusterFixture
+        private readonly Fixture fixture;
+
+        public class Fixture : BaseTestClusterFixture
         {
-            protected override TestingSiloHost CreateClusterHost()
+            protected override TestCluster CreateTestCluster()
             {
-                return new TestingSiloHost(new TestingSiloOptions
-                {
-                    AdjustConfig = config =>
-                    {
-                        config.Globals.PerformDeadlockDetection = true;
-                    }
-                });
+                var options = new TestClusterOptions();
+                options.ClusterConfiguration.Globals.PerformDeadlockDetection = true;
+
+                return new TestCluster(options);
             }
         }
 
         private const int numIterations = 30;
+
+        public DeadlockDetectionTests(Fixture fixture)
+        {
+            this.fixture = fixture;
+        }
 
         // 2 silos, loop across all cases (to force all grains to be local and remote):
         //      Non Reentrant A, B
@@ -46,7 +51,7 @@ namespace UnitTests.General
             for (int i = 0; i < numIterations; i++)
             {
                 long grainId = baseGrainId + i;
-                IDeadlockNonReentrantGrain firstGrain = GrainClient.GrainFactory.GetGrain<IDeadlockNonReentrantGrain>(grainId);
+                IDeadlockNonReentrantGrain firstGrain = this.fixture.GrainFactory.GetGrain<IDeadlockNonReentrantGrain>(grainId);
                 List<Tuple<long, bool>> callChain = new List<Tuple<long, bool>>();
                 callChain.Add(new Tuple<long, bool>(grainId, true));
                 callChain.Add(new Tuple<long, bool>(grainId, true));
@@ -58,7 +63,7 @@ namespace UnitTests.General
                 catch (Exception exc)
                 {
                     Exception baseExc = exc.GetBaseException();
-                    logger.Info(baseExc.Message);
+                    this.fixture.Logger.Info(baseExc.Message);
                     Assert.Equal(typeof(DeadlockException), baseExc.GetType());
                     DeadlockException deadlockExc = (DeadlockException)baseExc;
                     Assert.Equal(callChain.Count, deadlockExc.CallChain.Count());
@@ -75,7 +80,7 @@ namespace UnitTests.General
             for (int i = 0; i < numIterations; i++)
             {
                 long grainId = baseGrainId + i;
-                IDeadlockNonReentrantGrain firstGrain = GrainClient.GrainFactory.GetGrain<IDeadlockNonReentrantGrain>(grainId);
+                IDeadlockNonReentrantGrain firstGrain = this.fixture.GrainFactory.GetGrain<IDeadlockNonReentrantGrain>(grainId);
                 List<Tuple<long, bool>> callChain = new List<Tuple<long, bool>>();
                 callChain.Add(new Tuple<long, bool>(grainId, true));
                 callChain.Add(new Tuple<long, bool>(bBase + grainId, true));
@@ -88,7 +93,7 @@ namespace UnitTests.General
                 catch (Exception exc)
                 {
                     Exception baseExc = exc.GetBaseException();
-                    logger.Info(baseExc.Message);
+                    this.fixture.Logger.Info(baseExc.Message);
                     Assert.Equal(typeof(DeadlockException), baseExc.GetType());
                     DeadlockException deadlockExc = (DeadlockException)baseExc;
                     Assert.Equal(callChain.Count, deadlockExc.CallChain.Count());
@@ -105,7 +110,7 @@ namespace UnitTests.General
             for (int i = 0; i < numIterations; i++)
             {
                 long grainId = baseGrainId + i;
-                IDeadlockReentrantGrain firstGrain = GrainClient.GrainFactory.GetGrain<IDeadlockReentrantGrain>(grainId);
+                IDeadlockReentrantGrain firstGrain = this.fixture.GrainFactory.GetGrain<IDeadlockReentrantGrain>(grainId);
                 List<Tuple<long, bool>> callChain = new List<Tuple<long, bool>>();
                 callChain.Add(new Tuple<long, bool>(cBase + grainId, false));
                 callChain.Add(new Tuple<long, bool>(grainId, true));
@@ -119,7 +124,7 @@ namespace UnitTests.General
                 catch (Exception exc)
                 {
                     Exception baseExc = exc.GetBaseException();
-                    logger.Info(baseExc.Message);
+                    this.fixture.Logger.Info(baseExc.Message);
                     Assert.Equal(typeof(DeadlockException), baseExc.GetType());
                     DeadlockException deadlockExc = (DeadlockException)baseExc;
                     Assert.Equal(callChain.Count, deadlockExc.CallChain.Count());
@@ -136,7 +141,7 @@ namespace UnitTests.General
             for (int i = 0; i < numIterations; i++)
             {
                 long grainId = baseGrainId + i;
-                IDeadlockReentrantGrain firstGrain = GrainClient.GrainFactory.GetGrain<IDeadlockReentrantGrain>(grainId);
+                IDeadlockReentrantGrain firstGrain = this.fixture.GrainFactory.GetGrain<IDeadlockReentrantGrain>(grainId);
                 List<Tuple<long, bool>> callChain = new List<Tuple<long, bool>>();
                 callChain.Add(new Tuple<long, bool>(cBase + grainId, false));
                 callChain.Add(new Tuple<long, bool>(cBase + grainId, false));
@@ -154,7 +159,7 @@ namespace UnitTests.General
             for (int i = 0; i < numIterations; i++)
             {
                 long grainId = baseGrainId + i;
-                IDeadlockReentrantGrain firstGrain = GrainClient.GrainFactory.GetGrain<IDeadlockReentrantGrain>(grainId);
+                IDeadlockReentrantGrain firstGrain = this.fixture.GrainFactory.GetGrain<IDeadlockReentrantGrain>(grainId);
                 List<Tuple<long, bool>> callChain = new List<Tuple<long, bool>>();
                 callChain.Add(new Tuple<long, bool>(cBase + grainId, false));
                 callChain.Add(new Tuple<long, bool>(grainId, true));

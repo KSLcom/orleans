@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using Orleans.Providers;
 using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
+using Orleans.Streams.Core;
 
 namespace Orleans.Streams
 {
@@ -14,28 +15,21 @@ namespace Orleans.Streams
     {
         /// <summary>
         /// Retrieves the opaque identity of currently executing grain or client object. 
-        /// Just for logging purposes.
         /// </summary>
+        /// <remarks>Exposed for logging purposes.</remarks>
         string ExecutingEntityIdentity();
 
         SiloAddress ExecutingSiloAddress { get; }
 
+        /// <summary>
+        /// Returns the stream directory.
+        /// </summary>
+        /// <returns>The stream directory.</returns>
         StreamDirectory GetStreamDirectory();
 
         void RegisterSystemTarget(ISystemTarget target);
 
-        void UnRegisterSystemTarget(ISystemTarget target);
-
-        /// <summary>
-        /// Binds an extension to an addressable object, if not already done.
-        /// </summary>
-        /// <typeparam name="TExtension">The type of the extension (e.g. StreamConsumerExtension).</typeparam>
-        /// <typeparam name="TExtensionInterface">The public interface type of the implementation.</typeparam>
-        /// <param name="newExtensionFunc">A factory function that constructs a new extension object.</param>
-        /// <returns>A tuple, containing first the extension and second an addressable reference to the extension's interface.</returns>
-        Task<Tuple<TExtension, TExtensionInterface>> BindExtension<TExtension, TExtensionInterface>(Func<TExtension> newExtensionFunc)
-            where TExtension : IGrainExtension
-            where TExtensionInterface : IGrainExtension;
+        void UnregisterSystemTarget(ISystemTarget target);
 
         /// <summary>
         /// A Pub Sub runtime interface.
@@ -48,14 +42,9 @@ namespace Orleans.Streams
         /// <param name="numSubRanges">Total number of sub ranges within this silo range.</param>
         /// <returns></returns>
         IConsistentRingProviderForGrains GetConsistentRingProvider(int mySubRangeIndex, int numSubRanges);
-
-        /// <summary>Return true if this runtime executes inside silo, false otherwise (on the client).</summary>
-        bool InSilo { get; }
-
-        object GetCurrentSchedulingContext();
     }
 
-        /// <summary>
+    /// <summary>
     /// Provider-facing interface for manager of streaming providers
     /// </summary>
     internal interface ISiloSideStreamProviderRuntime : IStreamProviderRuntime
@@ -65,7 +54,8 @@ namespace Orleans.Streams
             string streamProviderName,
             IQueueAdapterFactory adapterFactory,
             IQueueAdapter queueAdapter,
-            PersistentStreamProviderConfig config);
+            PersistentStreamProviderConfig config,
+            IProviderConfiguration providerConfig);
     }
 
     public enum StreamPubSubType
@@ -91,7 +81,8 @@ namespace Orleans.Streams
         public static readonly TimeSpan DEFAULT_STREAM_INACTIVITY_PERIOD = TimeSpan.FromMinutes(30);
 
         public const string QUEUE_BALANCER_TYPE = "QueueBalancerType";
-        public const StreamQueueBalancerType DEFAULT_STREAM_QUEUE_BALANCER_TYPE = StreamQueueBalancerType.ConsistentRingBalancer;
+        //default balancer type if ConsistentRingBalancer
+        public static Type DEFAULT_STREAM_QUEUE_BALANCER_TYPE = null;
 
         public const string STREAM_PUBSUB_TYPE = "PubSubType";
         public const StreamPubSubType DEFAULT_STREAM_PUBSUB_TYPE = StreamPubSubType.ExplicitGrainBasedAndImplicit;
@@ -99,12 +90,16 @@ namespace Orleans.Streams
         public const string SILO_MATURITY_PERIOD = "SiloMaturityPeriod";
         public static readonly TimeSpan DEFAULT_SILO_MATURITY_PERIOD = TimeSpan.FromMinutes(2);
 
-
         public TimeSpan GetQueueMsgsTimerPeriod { get; set; } = DEFAULT_GET_QUEUE_MESSAGES_TIMER_PERIOD;
         public TimeSpan InitQueueTimeout { get; set; } = DEFAULT_INIT_QUEUE_TIMEOUT;
         public TimeSpan MaxEventDeliveryTime { get; set; } = DEFAULT_MAX_EVENT_DELIVERY_TIME;
         public TimeSpan StreamInactivityPeriod { get; set; } = DEFAULT_STREAM_INACTIVITY_PERIOD;
-        public StreamQueueBalancerType BalancerType { get; set; } = DEFAULT_STREAM_QUEUE_BALANCER_TYPE;
+
+        /// <summary>
+        /// The queue balancer type for your stream provider. If you are using a custom queue balancer by injecting IStreamQueueBalancer as a transient service into DI,
+        /// you should use your custom balancer's type
+        /// </summary>
+        public Type BalancerType { get; set; } = DEFAULT_STREAM_QUEUE_BALANCER_TYPE;
         public StreamPubSubType PubSubType { get; set; } = DEFAULT_STREAM_PUBSUB_TYPE;
         public TimeSpan SiloMaturityPeriod { get; set; } = DEFAULT_SILO_MATURITY_PERIOD;
 
@@ -124,9 +119,7 @@ namespace Orleans.Streams
                 InitQueueTimeout = ConfigUtilities.ParseTimeSpan(timeout,
                     "Invalid time value for the " + INIT_QUEUE_TIMEOUT + " property in the provider config values.");
 
-            string balanceTypeString;
-            if (config.Properties.TryGetValue(QUEUE_BALANCER_TYPE, out balanceTypeString))
-                BalancerType = (StreamQueueBalancerType)Enum.Parse(typeof(StreamQueueBalancerType), balanceTypeString);
+            BalancerType = config.GetTypeProperty(QUEUE_BALANCER_TYPE, DEFAULT_STREAM_QUEUE_BALANCER_TYPE);
 
             if (config.Properties.TryGetValue(MAX_EVENT_DELIVERY_TIME, out timeout))
                 MaxEventDeliveryTime = ConfigUtilities.ParseTimeSpan(timeout,
@@ -154,7 +147,7 @@ namespace Orleans.Streams
         {
             properties[GET_QUEUE_MESSAGES_TIMER_PERIOD] = ConfigUtilities.ToParseableTimeSpan(GetQueueMsgsTimerPeriod);
             properties[INIT_QUEUE_TIMEOUT] = ConfigUtilities.ToParseableTimeSpan(InitQueueTimeout);
-            properties[QUEUE_BALANCER_TYPE] = BalancerType.ToString();
+            properties[QUEUE_BALANCER_TYPE] = BalancerType.AssemblyQualifiedName;
             properties[MAX_EVENT_DELIVERY_TIME] = ConfigUtilities.ToParseableTimeSpan(MaxEventDeliveryTime);
             properties[STREAM_INACTIVITY_PERIOD] = ConfigUtilities.ToParseableTimeSpan(StreamInactivityPeriod);
             properties[STREAM_PUBSUB_TYPE] = PubSubType.ToString();
@@ -188,7 +181,7 @@ namespace Orleans.Streams
 
         Task<int> ConsumerCount(Guid streamId, string streamProvider, string streamNamespace);
 
-        Task<List<GuidId>> GetAllSubscriptions(StreamId streamId, IStreamConsumerExtension streamConsumer);
+        Task<List<StreamSubscription>> GetAllSubscriptions(StreamId streamId, IStreamConsumerExtension streamConsumer = null);
 
         GuidId CreateSubscriptionId(StreamId streamId, IStreamConsumerExtension streamConsumer);
 

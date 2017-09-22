@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Orleans.Providers
 {
@@ -13,28 +14,36 @@ namespace Orleans.Providers
         private readonly string providerKind;
         private readonly IProviderRuntime runtime;
 
-        public StatisticsProviderManager(string kind, IProviderRuntime runtime)
+        public StatisticsProviderManager(IProviderRuntime runtime, LoadedProviderTypeLoaders loadedProviderTypeLoaders)
         {
-            providerKind = kind;
+            providerKind = ProviderCategoryConfiguration.STATISTICS_PROVIDER_CATEGORY_NAME;
             this.runtime = runtime;
+            statisticsProviderLoader = new ProviderLoader<IProvider>(loadedProviderTypeLoaders);
         }
 
         public IGrainFactory GrainFactory { get { return runtime.GrainFactory; }}
         public IServiceProvider ServiceProvider { get { return runtime.ServiceProvider; } }
         public void SetInvokeInterceptor(InvokeInterceptor interceptor)
         {
+#pragma warning disable 618
             runtime.SetInvokeInterceptor(interceptor);
+#pragma warning restore 618
         }
 
         public InvokeInterceptor GetInvokeInterceptor()
         {
+#pragma warning disable 618
             return runtime.GetInvokeInterceptor();
+#pragma warning restore 618
+        }
+
+        public Task<Tuple<TExtension, TExtensionInterface>> BindExtension<TExtension, TExtensionInterface>(Func<TExtension> newExtensionFunc) where TExtension : IGrainExtension where TExtensionInterface : IGrainExtension
+        {
+            return runtime.BindExtension<TExtension, TExtensionInterface>(newExtensionFunc);
         }
 
         public async Task<string> LoadProvider(IDictionary<string, ProviderCategoryConfiguration> configs)
         {
-            statisticsProviderLoader = new ProviderLoader<IProvider>();
-
             if (!configs.ContainsKey(providerKind))
                 return null;
 
@@ -66,7 +75,6 @@ namespace Orleans.Providers
         // used only for testing
         internal async Task LoadEmptyProviders()
         {
-            statisticsProviderLoader = new ProviderLoader<IProvider>();
             statisticsProviderLoader.LoadProviders(new Dictionary<string, IProviderConfiguration>(), this);
             await statisticsProviderLoader.InitProviders(runtime);
         }

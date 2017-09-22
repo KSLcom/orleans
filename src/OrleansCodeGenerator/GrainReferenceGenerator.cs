@@ -11,6 +11,7 @@ namespace Orleans.CodeGenerator
     using Microsoft.CodeAnalysis.CSharp.Syntax;
     using Orleans.CodeGeneration;
     using Orleans.CodeGenerator.Utilities;
+    using Orleans.Concurrency;
     using Orleans.Runtime;
     using GrainInterfaceUtils = Orleans.CodeGeneration.GrainInterfaceUtils;
     using SF = Microsoft.CodeAnalysis.CSharp.SyntaxFactory;
@@ -61,12 +62,8 @@ namespace Orleans.CodeGenerator
             var attributes = SF.AttributeList()
                 .AddAttributes(
                     CodeGeneratorCommon.GetGeneratedCodeAttributeSyntax(),
-#if !NETSTANDARD
-                    // we could add Serializable attribute if we want, but that would require that the target
-                    // project depends on System.Runtime.Serialization.Formatters, which is currently in preview
                     SF.Attribute(typeof(SerializableAttribute).GetNameSyntax()),
                     SF.Attribute(typeof(ExcludeFromCodeCoverageAttribute).GetNameSyntax()),
-#endif
                     markerAttribute);
 
             var className = CodeGeneratorCommon.ClassPrefix + TypeUtils.GetSuitableClassName(grainType) + ClassSuffix;
@@ -80,6 +77,7 @@ namespace Orleans.CodeGenerator
                     .AddMembers(GenerateConstructors(className))
                     .AddMembers(
                         GenerateInterfaceIdProperty(grainType),
+                        GenerateInterfaceVersionProperty(grainType),
                         GenerateInterfaceNameProperty(grainType),
                         GenerateIsCompatibleMethod(grainType),
                         GenerateGetMethodNameMethod(grainType))
@@ -101,7 +99,7 @@ namespace Orleans.CodeGenerator
         private static MemberDeclarationSyntax[] GenerateConstructors(string className)
         {
             var baseConstructors =
-                typeof(GrainReference).GetConstructors(
+                typeof(GrainReference).GetTypeInfo().GetConstructors(
                     BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance).Where(_ => !_.IsPrivate);
             var constructors = new List<MemberDeclarationSyntax>();
             foreach (var baseConstructor in baseConstructors)
@@ -147,7 +145,7 @@ namespace Orleans.CodeGenerator
                 foreach (var parameter in parameters)
                 {
                     onEncounteredType(parameter.ParameterType);
-                    if (typeof(IGrainObserver).IsAssignableFrom(parameter.ParameterType))
+                    if (typeof(IGrainObserver).GetTypeInfo().IsAssignableFrom(parameter.ParameterType))
                     {
                         body.Add(
                             SF.ExpressionStatement(
@@ -155,10 +153,27 @@ namespace Orleans.CodeGenerator
                                     .AddArgumentListArguments(SF.Argument(parameter.Name.ToIdentifierName()))));
                     }
                 }
-
+                
                 // Get the parameters argument value.
                 ExpressionSyntax args;
-                if (parameters.Length == 0)
+                if (method.IsGenericMethodDefinition)
+                {
+                    // Create an arguments array which includes the method's type parameters followed by the method's parameter list.
+                    var allParameters = new List<ExpressionSyntax>();
+                    foreach (var typeParameter in method.GetGenericArguments())
+                    {
+                        allParameters.Add(SF.TypeOfExpression(typeParameter.GetTypeSyntax()));
+                    }
+
+                    allParameters.AddRange(parameters.Select(GetParameterForInvocation));
+
+                    args =
+                        SF.ArrayCreationExpression(typeof(object).GetArrayTypeSyntax())
+                        .WithInitializer(
+                            SF.InitializerExpression(SyntaxKind.ArrayInitializerExpression)
+                              .AddExpressions(allParameters.ToArray()));
+                }
+                else if (parameters.Length == 0)
                 {
                     args = SF.LiteralExpression(SyntaxKind.NullLiteralExpression);
                 }
@@ -174,7 +189,8 @@ namespace Orleans.CodeGenerator
                 var options = GetInvokeOptions(method);
 
                 // Construct the invocation call.
-                if (method.ReturnType == typeof(void))
+                var isOneWayTask = method.GetCustomAttribute<OneWayAttribute>() != null;
+                if (method.ReturnType == typeof(void) || isOneWayTask)
                 {
                     var invocation = SF.InvocationExpression(baseReference.Member("InvokeOneWayMethod"))
                         .AddArgumentListArguments(methodIdArgument)
@@ -186,6 +202,19 @@ namespace Orleans.CodeGenerator
                     }
 
                     body.Add(SF.ExpressionStatement(invocation));
+
+                    if (isOneWayTask)
+                    {
+                        if (method.ReturnType != typeof(Task))
+                        {
+                            throw new CodeGenerationException(
+                                $"Method {grainType.GetParseableName()}.{method.Name} is marked with [{nameof(OneWayAttribute)}], " +
+                                $"but has a return type which is not assignable from {typeof(Task)}");
+                        }
+
+                        var done = typeof(Task).GetNameSyntax(true).Member((object _) => Task.CompletedTask);
+                        body.Add(SF.ReturnStatement(done));
+                    }
                 }
                 else
                 {
@@ -237,6 +266,16 @@ namespace Orleans.CodeGenerator
                 options.Add(typeof(InvokeMethodOptions).GetNameSyntax().Member(InvokeMethodOptions.AlwaysInterleave.ToString()));
             }
 
+            if (GrainInterfaceUtils.IsNewTransactionRequired(method))
+            {
+                options.Add(typeof(InvokeMethodOptions).GetNameSyntax().Member(InvokeMethodOptions.TransactionRequiresNew.ToString()));
+            }
+
+            if (GrainInterfaceUtils.IsTransactionRequired(method))
+            {
+                options.Add(typeof(InvokeMethodOptions).GetNameSyntax().Member(InvokeMethodOptions.TransactionRequired.ToString()));
+            }
+
             ExpressionSyntax allOptions;
             if (options.Count <= 1)
             {
@@ -261,8 +300,8 @@ namespace Orleans.CodeGenerator
             var argIdentifier = arg.GetOrCreateName(argIndex).ToIdentifierName();
 
             // Addressable arguments must be converted to references before passing.
-            if (typeof(IAddressable).IsAssignableFrom(arg.ParameterType)
-                && (typeof(Grain).IsAssignableFrom(arg.ParameterType) || arg.ParameterType.GetTypeInfo().IsInterface))
+            if (typeof(IAddressable).GetTypeInfo().IsAssignableFrom(arg.ParameterType)
+                && arg.ParameterType.GetTypeInfo().IsInterface)
             {
                 return
                     SF.ConditionalExpression(
@@ -276,7 +315,7 @@ namespace Orleans.CodeGenerator
 
         private static MemberDeclarationSyntax GenerateInterfaceIdProperty(Type grainType)
         {
-            var property = TypeUtils.Member((IGrainMethodInvoker _) => _.InterfaceId);
+            var property = TypeUtils.Member((GrainReference _) => _.InterfaceId);
             var returnValue = SF.LiteralExpression(
                 SyntaxKind.NumericLiteralExpression,
                 SF.Literal(GrainInterfaceUtils.GetGrainInterfaceId(grainType)));
@@ -285,7 +324,21 @@ namespace Orleans.CodeGenerator
                     .AddAccessorListAccessors(
                         SF.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
                             .AddBodyStatements(SF.ReturnStatement(returnValue)))
-                    .AddModifiers(SF.Token(SyntaxKind.ProtectedKeyword), SF.Token(SyntaxKind.OverrideKeyword));
+                    .AddModifiers(SF.Token(SyntaxKind.PublicKeyword), SF.Token(SyntaxKind.OverrideKeyword));
+        }
+
+        private static MemberDeclarationSyntax GenerateInterfaceVersionProperty(Type grainType)
+        {
+            var property = TypeUtils.Member((GrainReference _) => _.InterfaceVersion);
+            var returnValue = SF.LiteralExpression(
+                SyntaxKind.NumericLiteralExpression,
+                SF.Literal(GrainInterfaceUtils.GetGrainInterfaceVersion(grainType))); 
+            return
+                SF.PropertyDeclaration(typeof(ushort).GetTypeSyntax(), property.Name)
+                    .AddAccessorListAccessors(
+                        SF.AccessorDeclaration(SyntaxKind.GetAccessorDeclaration)
+                            .AddBodyStatements(SF.ReturnStatement(returnValue)))
+                    .AddModifiers(SF.Token(SyntaxKind.PublicKeyword), SF.Token(SyntaxKind.OverrideKeyword));
         }
 
         private static MemberDeclarationSyntax GenerateIsCompatibleMethod(Type grainType)
@@ -332,12 +385,7 @@ namespace Orleans.CodeGenerator
 
         private static MethodDeclarationSyntax GenerateGetMethodNameMethod(Type grainType)
         {
-            // Get the method with the correct type.
-            var method =
-                typeof(GrainReference)
-                    .GetMethods(BindingFlags.NonPublic | BindingFlags.Instance)
-                    .FirstOrDefault(m => m.Name == "GetMethodName");
-
+            var method = TypeUtils.Method((GrainReference _) => _.GetMethodName(default(int), default(int)));
             var methodDeclaration =
                 method.GetDeclarationSyntax()
                     .AddModifiers(SF.Token(SyntaxKind.OverrideKeyword));

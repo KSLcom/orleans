@@ -6,7 +6,9 @@ using System.Threading.Tasks;
 using Microsoft.WindowsAzure.Storage.Table;
 using Orleans.AzureUtils;
 using Orleans.Providers.Streams.PersistentStreams;
+using Orleans.Serialization;
 using Orleans.Streams;
+using TestExtensions;
 
 namespace Tester.TestStreamProviders
 {
@@ -15,14 +17,14 @@ namespace Tester.TestStreamProviders
         private const string TableName = "TestStreamFailures";
         private const string DeploymentId = "TestDeployment";
 
-        private TestAzureTableStorageStreamFailureHandler()
-            : base(false, DeploymentId, TableName, TestDefaultConfiguration.DataConnectionString)
+        private TestAzureTableStorageStreamFailureHandler(SerializationManager serializationManager)
+            : base(serializationManager, false, DeploymentId, TableName, TestDefaultConfiguration.DataConnectionString)
         {
         }
 
-        public static async Task<IStreamFailureHandler> Create()
+        public static async Task<IStreamFailureHandler> Create(SerializationManager serializationManager)
         {
-            var failureHandler = new TestAzureTableStorageStreamFailureHandler();
+            var failureHandler = new TestAzureTableStorageStreamFailureHandler(serializationManager);
             await failureHandler.InitAsync();
             return failureHandler;
         }

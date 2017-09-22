@@ -1,12 +1,10 @@
 ﻿using Orleans.Runtime;
 using System;
-using System.Collections.Generic;
 using System.ComponentModel;
 using System.Configuration.Install;
 using System.Diagnostics;
-using System.IO;
 using System.Collections;
-using Orleans.Serialization;
+using System.Linq;
 using Orleans.Runtime.Configuration;
 
 namespace OrleansTelemetryConsumers.Counters
@@ -17,27 +15,20 @@ namespace OrleansTelemetryConsumers.Counters
     [RunInstaller(true)]
     public class OrleansPerformanceCounterInstaller : Installer
     {
-        private OrleansPerfCounterTelemetryConsumer consumer;
+        private readonly OrleansPerfCounterTelemetryConsumer consumer;
 
         /// <summary>
         /// Constructors -- Registers Orleans system performance counters, 
-        /// plus any grain-specific activation conters that can be detected when this installer is run.
+        /// plus any grain-specific activation counters that can be detected when this installer is run.
         /// </summary>
         public OrleansPerformanceCounterInstaller()
         {
-            SerializationManager.InitializeForTesting();
             Trace.Listeners.Clear();
             var cfg = new NodeConfiguration { TraceFilePattern = null, TraceToConsole = false };
             LogManager.Initialize(cfg);
-
+            var siloAssemblyLoader = new SiloAssemblyLoader(new NodeConfiguration(), null);
+            LogManager.GrainTypes = siloAssemblyLoader.GetGrainClassTypes().Keys.ToList();
             consumer = new OrleansPerfCounterTelemetryConsumer();
-
-            if (GrainTypeManager.Instance == null)
-            {
-                var loader = new SiloAssemblyLoader(new Dictionary<string, SearchOption>());
-                var typeManager = new GrainTypeManager(false, null, loader); // We shouldn't need GrainFactory in this case
-                GrainTypeManager.Instance.Start(false);
-            }
         }
 
         /// <summary>

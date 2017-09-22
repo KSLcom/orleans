@@ -1,5 +1,6 @@
 using Microsoft.FSharp.Core;
 using Orleans.Serialization;
+using TestExtensions;
 using UnitTests.FSharpTypes;
 using Xunit;
 
@@ -8,16 +9,19 @@ namespace UnitTests.Serialization
     /// <summary>
     /// Summary description for SerializationTests
     /// </summary>
-    public class SerializationTestsFsharpTypes
+    [Collection(TestEnvironmentFixture.DefaultCollection)]
+    public class SerializationTestsFSharpTypes
     {
-        public SerializationTestsFsharpTypes()
+        private readonly TestEnvironmentFixture fixture;
+
+        public SerializationTestsFSharpTypes(TestEnvironmentFixture fixture)
         {
-            SerializationManager.InitializeForTesting();
+            this.fixture = fixture;
         }
 
         void RoundtripSerializationTest<T>(T input)
         {
-            var output = SerializationManager.RoundTripSerializationForTesting(input);
+            var output = this.fixture.SerializationManager.RoundTripSerializationForTesting(input);
             Assert.Equal(input, output);
         }
 

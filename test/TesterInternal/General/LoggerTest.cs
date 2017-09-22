@@ -7,11 +7,11 @@ using System.Text;
 using System.Threading;
 using Orleans;
 using Orleans.Runtime;
+using Orleans.Serialization;
 using Tester;
-using UnitTests.Tester;
+using TestExtensions;
 using Xunit;
 using Xunit.Abstractions;
-
 namespace UnitTests
 {
     /// <summary>
@@ -22,9 +22,11 @@ namespace UnitTests
     {
         private readonly ITestOutputHelper output;
         private double timingFactor;
-                
-        public LoggerTest(ITestOutputHelper output)
+        private DefaultClusterFixture fixture;
+
+        public LoggerTest(ITestOutputHelper output, DefaultClusterFixture fixture)
         {
+            this.fixture = fixture;
             this.output = output;
             LogManager.UnInitialize();
             LogManager.SetRuntimeLogLevel(Severity.Verbose);
@@ -322,7 +324,7 @@ namespace UnitTests
                     createdCounters.Add(name);
                 }
 
-                LogStatistics statsLogger = new LogStatistics(TimeSpan.Zero, true);
+                LogStatistics statsLogger = new LogStatistics(TimeSpan.Zero, true, this.fixture.HostedCluster.SerializationManager);
                 statsLogger.DumpCounters().Wait();
 
                 int count = logConsumer.GetEntryCount((int)ErrorCode.PerfCounterDumpAll);
@@ -336,69 +338,20 @@ namespace UnitTests
             }
         }
 
-        [Fact, TestCategory("Logger"), TestCategory("Performance")]
-        public void Logger_Perf_FileLogWriter()
-        {
-            const string testName = "Logger_Perf_FileLogWriter";
-            TimeSpan target = TimeSpan.FromMilliseconds(1000);
-            int n = 10000;
-            int logCode = TestUtils.Random.Next(100000);
-
-            var logFile = new FileInfo("log-" + testName + ".txt");
-            ITraceTelemetryConsumer log = new FileTelemetryConsumer(logFile);
-            RunLogWriterPerfTest(testName, n, logCode, target, log);
-        }
-
-        [Fact, TestCategory("Logger"), TestCategory("Performance")]
-        public void Logger_Perf_TraceLogWriter()
-        {
-            const string testName = "Logger_Perf_TraceLogWriter";
-            TimeSpan target = TimeSpan.FromMilliseconds(360);
-            int n = 10000;
-            int logCode = TestUtils.Random.Next(100000);
-
-            ITraceTelemetryConsumer log = new TraceTelemetryConsumer();
-            RunLogWriterPerfTest(testName, n, logCode, target, log);
-        }
-
-        [Fact, TestCategory("Logger"), TestCategory("Performance")]
-        public void Logger_Perf_ConsoleLogWriter()
-        {
-            const string testName = "Logger_Perf_ConsoleLogWriter";
-            TimeSpan target = TimeSpan.FromMilliseconds(100);
-            int n = 10000;
-            int logCode = TestUtils.Random.Next(100000);
-
-            ITraceTelemetryConsumer log = new ConsoleTelemetryConsumer();
-            RunLogWriterPerfTest(testName, n, logCode, target, log);
-        }
-
         //[Fact, TestCategory("Logger"), TestCategory("Performance")]
-        //public void Logger_Perf_EtwLogWriter()
+        //public void Logger_Perf_FileLogWriter()
         //{
-        //    const string testName = "Logger_Perf_EtwLogWriter";
-        //    TimeSpan target = TimeSpan.FromSeconds(0.7);
-        //    int n = 100000;
-        //
-        //    ILogConsumer log = new LogWriterToEtw();
-        //    RunLogWriterPerfTest(testName, n, target, log);
+        //    const string testName = "Logger_Perf_FileLogWriter";
+        //    TimeSpan target = TimeSpan.FromMilliseconds(1000);
+        //    int n = 10000;
+        //    int logCode = TestUtils.Random.Next(100000);
+
+        //    var logConsumer = new Orleans.Extensions.Logging.FileLogConsumer("log-" + testName + ".txt");
+        //    LogManager.LogConsumers.Add(logConsumer);
+        //    LogManager.BulkMessageInterval = target;
+        //    Logger logger = LogManager.GetLogger(testName);
+        //    RunLoggerPerfTest(testName, n, logCode, target, logger);
         //}
-
-        [Fact, TestCategory("Logger"), TestCategory("Performance")]
-        public void Logger_Perf_Logger_Console()
-        {
-            const string testName = "Logger_Perf_Logger_Console";
-            TimeSpan target = TimeSpan.FromMilliseconds(50);
-            int n = 10000;
-            int logCode = TestUtils.Random.Next(100000);
-
-            ITraceTelemetryConsumer logConsumer = new ConsoleTelemetryConsumer();
-            LogManager.TelemetryConsumers.Add(logConsumer);
-            LogManager.BulkMessageInterval = target;
-            Logger logger = LogManager.GetLogger(testName);
-
-            RunLoggerPerfTest(testName, n, logCode, target, logger);
-        }
 
         [Fact, TestCategory("Logger"), TestCategory("Performance")]
         public void Logger_Perf_Logger_Dummy()
@@ -416,34 +369,21 @@ namespace UnitTests
             RunLoggerPerfTest(testName, n, logCode, target, logger);
         }
 
-        private void RunLogWriterPerfTest(string testName, int n, int logCode, TimeSpan target, ITraceTelemetryConsumer log)
-        {
-            // warm up
-            log.TrackTrace(string.Format( "{0}|{1}|{2}|{3}", LoggerType.Runtime, testName, "msg warm up", logCode), Severity.Info);
-
-            var messages = Enumerable.Range(0, n)
-                .Select(i => string.Format("{0}|{1}|{2}|{3}", LoggerType.Runtime, testName, "msg " + i, logCode))
-                .ToList();
-
-            var stopwatch = Stopwatch.StartNew();
-            foreach (string message in messages)
-            {
-                log.TrackTrace(message, Severity.Info);
-            }
-            stopwatch.Stop();
-            var elapsed = stopwatch.Elapsed;
-            output.WriteLine(testName + " : Elapsed time = " + elapsed);
-            Assert.True(elapsed < target.Multiply(timingFactor), $"{testName}: Elapsed time {elapsed} exceeds target time {target}");
-        }
-
         private void RunLoggerPerfTest(string testName, int n, int logCode, TimeSpan target, Logger logger)
         {
+            logger.Warn(logCode, $"{testName}|{"msg warm up"}|{logCode}");
+
+            var messages = Enumerable.Range(0, n)
+                .Select(i => $"{testName}|{"msg " + i}|{logCode}")
+                .ToList();
+
             var stopwatch = new Stopwatch();
             stopwatch.Start();
-            for (int i = 0; i < n; i++)
+            foreach (string message in messages)
             {
-                logger.Warn(logCode, "msg " + i);
+                logger.Warn(logCode, message);
             }
+
             var elapsed = stopwatch.Elapsed;
             string msg = testName + " : Elapsed time = " + elapsed;
 

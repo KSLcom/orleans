@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-
 namespace Orleans.Runtime.ConsistentRing
 {
     /// <summary>
@@ -13,9 +12,7 @@ namespace Orleans.Runtime.ConsistentRing
     /// E.g. in a ring of nodes {5, 10, 15}, the responsible of key 7 is node 5 (the node is responsible for its sucessing range)..
     /// </summary>
     internal class VirtualBucketsRingProvider :
-#if !NETSTANDARD
         MarshalByRefObject,
-#endif
         IConsistentRingProvider, ISiloStatusListener
     {
         private readonly List<IRingRangeListener> statusListeners;
@@ -28,23 +25,24 @@ namespace Orleans.Runtime.ConsistentRing
         private bool running;
         private IRingRange myRange;
 
-        internal VirtualBucketsRingProvider(SiloAddress siloAddr, int nBucketsPerSilo)
+        internal VirtualBucketsRingProvider(SiloAddress siloAddress, int numVirtualBuckets)
         {
-            if (nBucketsPerSilo <= 0 )
-                throw new IndexOutOfRangeException("numBucketsPerSilo is out of the range. numBucketsPerSilo = " + nBucketsPerSilo);
+            numBucketsPerSilo = numVirtualBuckets;
+
+            if (numBucketsPerSilo <= 0 )
+                throw new IndexOutOfRangeException("numBucketsPerSilo is out of the range. numBucketsPerSilo = " + numBucketsPerSilo);
 
             logger = LogManager.GetLogger(typeof(VirtualBucketsRingProvider).Name);
                         
             statusListeners = new List<IRingRangeListener>();
             bucketsMap = new SortedDictionary<uint, SiloAddress>();
             sortedBucketsList = new List<Tuple<uint, SiloAddress>>();
-            myAddress = siloAddr;
-            numBucketsPerSilo = nBucketsPerSilo;
+            myAddress = siloAddress;
             lockable = new object();
             running = true;
             myRange = RangeFactory.CreateFullRange();
 
-            logger.Info("Starting {0} on silo {1}.", typeof(VirtualBucketsRingProvider).Name, siloAddr.ToStringWithHashCode());
+            logger.Info("Starting {0} on silo {1}.", typeof(VirtualBucketsRingProvider).Name, siloAddress.ToStringWithHashCode());
 
             StringValueStatistic.FindOrCreate(StatisticNames.CONSISTENTRING_RING, ToString);
             IntValueStatistic.FindOrCreate(StatisticNames.CONSISTENTRING_RINGSIZE, () => GetRingSize());

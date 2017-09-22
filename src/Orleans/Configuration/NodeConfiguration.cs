@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -88,7 +89,7 @@ namespace Orleans.Runtime.Configuration
         /// <summary>
         /// The MaxActiveThreads attribute specifies the maximum number of simultaneous active threads the scheduler will allow.
         /// Generally this number should be roughly equal to the number of cores on the node.
-        /// Using a value of 0 will look at System.Environment.ProcessorCount to decide the number instead.
+        /// Using a value of 0 will look at System.Environment.ProcessorCount to decide the number instead, which is only valid when set from xml config
         /// </summary>
         public int MaxActiveThreads { get; set; }
 
@@ -210,7 +211,11 @@ namespace Orleans.Runtime.Configuration
         /// </summary>
         public bool UseNagleAlgorithm { get; set; }
 
+        public TelemetryConfiguration TelemetryConfiguration { get; } = new TelemetryConfiguration();
+
         public Dictionary<string, SearchOption> AdditionalAssemblyDirectories { get; set; }
+
+        public List<string> ExcludedGrainTypes { get; set; }
 
         public string SiloShutdownEventName { get; set; }
 
@@ -220,7 +225,6 @@ namespace Orleans.Runtime.Configuration
         private static readonly TimeSpan DEFAULT_STATS_LOG_WRITE_PERIOD = TimeSpan.FromMinutes(5);
         internal static readonly StatisticsLevel DEFAULT_STATS_COLLECTION_LEVEL = StatisticsLevel.Info;
         private static readonly int DEFAULT_MAX_ACTIVE_THREADS = Math.Max(4, System.Environment.ProcessorCount);
-        internal static readonly int DEFAULT_MAX_LOCAL_ACTIVATIONS = System.Environment.ProcessorCount;
         private const int DEFAULT_MIN_DOT_NET_THREAD_POOL_SIZE = 200;
         private static readonly int DEFAULT_MIN_DOT_NET_CONNECTION_LIMIT = DEFAULT_MIN_DOT_NET_THREAD_POOL_SIZE;
         private static readonly TimeSpan DEFAULT_ACTIVATION_SCHEDULING_QUANTUM = TimeSpan.FromMilliseconds(100);
@@ -249,7 +253,7 @@ namespace Orleans.Runtime.Configuration
 
             DefaultTraceLevel = Severity.Info;
             TraceLevelOverrides = new List<Tuple<string, Severity>>();
-            TraceToConsole = true;
+            TraceToConsole = ConsoleText.IsConsoleAvailable;
             TraceFilePattern = "{0}-{1}.log";
             LargeMessageWarningThreshold = Constants.LARGE_OBJECT_HEAP_THRESHOLD;
             PropagateActivityId = Constants.DEFAULT_PROPAGATE_E2E_ACTIVITY_ID;
@@ -271,6 +275,7 @@ namespace Orleans.Runtime.Configuration
             UseNagleAlgorithm = false;
 
             AdditionalAssemblyDirectories = new Dictionary<string, SearchOption>();
+            ExcludedGrainTypes = new List<string>();
         }
 
         public NodeConfiguration(NodeConfiguration other)
@@ -320,7 +325,9 @@ namespace Orleans.Runtime.Configuration
             UseNagleAlgorithm = other.UseNagleAlgorithm;
 
             StartupTypeName = other.StartupTypeName;
-            AdditionalAssemblyDirectories = other.AdditionalAssemblyDirectories;
+            AdditionalAssemblyDirectories = new Dictionary<string, SearchOption>(other.AdditionalAssemblyDirectories);
+            ExcludedGrainTypes = other.ExcludedGrainTypes.ToList();
+            TelemetryConfiguration = other.TelemetryConfiguration.Clone();
         }
 
         public override string ToString()
@@ -351,14 +358,14 @@ namespace Orleans.Runtime.Configuration
             sb.Append("      ").Append("   Turn Warning Length Threshold: ").Append(TurnWarningLengthThreshold).AppendLine();
             sb.Append("      ").Append("   Inject More Worker Threads: ").Append(EnableWorkerThreadInjection).AppendLine();
             sb.Append("      ").Append("   MinDotNetThreadPoolSize: ").Append(MinDotNetThreadPoolSize).AppendLine();
-#if !NETSTANDARD_TODO
+
             int workerThreads;
             int completionPortThreads;
             ThreadPool.GetMinThreads(out workerThreads, out completionPortThreads);
             sb.Append("      ").AppendFormat("   .NET thread pool sizes - Min: Worker Threads={0} Completion Port Threads={1}", workerThreads, completionPortThreads).AppendLine();
             ThreadPool.GetMaxThreads(out workerThreads, out completionPortThreads);
             sb.Append("      ").AppendFormat("   .NET thread pool sizes - Max: Worker Threads={0} Completion Port Threads={1}", workerThreads, completionPortThreads).AppendLine();
-#endif
+
             sb.Append("      ").AppendFormat("   .NET ServicePointManager - DefaultConnectionLimit={0} Expect100Continue={1} UseNagleAlgorithm={2}", DefaultConnectionLimit, Expect100Continue, UseNagleAlgorithm).AppendLine();
             sb.Append("   Load Shedding Enabled: ").Append(LoadSheddingEnabled).AppendLine();
             sb.Append("   Load Shedding Limit: ").Append(LoadSheddingLimit).AppendLine();
@@ -483,12 +490,11 @@ namespace Orleans.Runtime.Configuration
                         }
                         break;
                     case "Telemetry":
-                        ConfigUtilities.ParseTelemetry(child);
+                        ConfigUtilities.ParseTelemetry(child, this.TelemetryConfiguration);
                         break;
                     case "AdditionalAssemblyDirectories":
                         ConfigUtilities.ParseAdditionalAssemblyDirectories(AdditionalAssemblyDirectories, child);
                         break;
-
                 }
             }
         }

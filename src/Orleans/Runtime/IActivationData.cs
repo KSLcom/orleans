@@ -1,6 +1,5 @@
+
 using System;
-using System.Threading.Tasks;
-using Orleans.Storage;
 
 namespace Orleans.Runtime
 {
@@ -13,8 +12,9 @@ namespace Orleans.Runtime
         Grain GrainInstance { get; }
         ActivationId ActivationId { get; }
         ActivationAddress Address { get; }
+        IServiceProvider ServiceProvider { get; }
         void DelayDeactivation(TimeSpan timeSpan);
-        IStorageProvider StorageProvider { get; }
-        IDisposable RegisterTimer(Func<object, Task> asyncCallback, object state, TimeSpan dueTime, TimeSpan period);
+        void OnTimerCreated(IGrainTimer timer);
+        void OnTimerDisposed(IGrainTimer timer);
     }
 }

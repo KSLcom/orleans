@@ -62,26 +62,30 @@ namespace Orleans.Storage
     public class BadProviderConfigException : OrleansException
     {
         public BadProviderConfigException()
-        {}
+        { }
         public BadProviderConfigException(string msg)
             : base(msg)
         { }
         public BadProviderConfigException(string msg, Exception exc)
             : base(msg, exc)
         { }
-#if !NETSTANDARD
+
         protected BadProviderConfigException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         { }
-#endif
     }
 
     /// <summary>
-    /// Exception thrown when a storage provider detects an Etag inconsistency when attemptiong to perform a WriteStateAsync operation.
+    /// Exception thrown when a storage provider detects an Etag inconsistency when attempting to perform a WriteStateAsync operation.
     /// </summary>
     [Serializable]
     public class InconsistentStateException : OrleansException
     {
+        /// <summary>
+        /// Whether or not this exception occurred on the current activation.
+        /// </summary>
+        internal bool IsSourceActivation { get; set; } = true;
+
         /// <summary>The Etag value currently held in persistent storage.</summary>
         public string StoredEtag { get; private set; }
 
@@ -89,18 +93,21 @@ namespace Orleans.Storage
         public string CurrentEtag { get; private set; }
 
         public InconsistentStateException()
-        {}
+        { }
         public InconsistentStateException(string msg)
             : base(msg)
         { }
         public InconsistentStateException(string msg, Exception exc)
             : base(msg, exc)
         { }
-#if !NETSTANDARD
+
         protected InconsistentStateException(SerializationInfo info, StreamingContext context)
             : base(info, context)
-        {}
-#endif
+        {
+            this.StoredEtag = info.GetString(nameof(StoredEtag));
+            this.CurrentEtag = info.GetString(nameof(CurrentEtag));
+            this.IsSourceActivation = info.GetBoolean(nameof(this.IsSourceActivation));
+        }
 
         public InconsistentStateException(
           string errorMsg,
@@ -129,6 +136,16 @@ namespace Orleans.Storage
         {
             return String.Format("InconsistentStateException: {0} Expected Etag={1} Received Etag={2} {3}",
                 Message, StoredEtag, CurrentEtag, InnerException);
+        }
+
+        public override void GetObjectData(SerializationInfo info, StreamingContext context)
+        {
+            if (info == null) throw new ArgumentNullException(nameof(info));
+
+            info.AddValue(nameof(StoredEtag), this.StoredEtag);
+            info.AddValue(nameof(CurrentEtag), this.CurrentEtag);
+            info.AddValue(nameof(this.IsSourceActivation), this.IsSourceActivation);
+            base.GetObjectData(info, context);
         }
     }
 }

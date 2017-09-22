@@ -4,29 +4,28 @@ using System.Linq;
 using System.Threading.Tasks;
 using Orleans.Providers;
 using Orleans.Runtime.Configuration;
-using Orleans.Runtime.Providers;
 using Orleans.Storage;
 
 namespace Orleans.Runtime.Storage
 {
-    internal class StorageProviderManager : IStorageProviderManager, IStorageProviderRuntime
+    internal class StorageProviderManager : IStorageProviderManager, IStorageProviderRuntime, IKeyedServiceCollection<string,IStorageProvider>
     {
+        private readonly IProviderRuntime providerRuntime;
         private ProviderLoader<IStorageProvider> storageProviderLoader;
-        private IProviderRuntime providerRuntime;
 
-        public StorageProviderManager(IGrainFactory grainFactory, IServiceProvider serviceProvider)
+        public StorageProviderManager(IGrainFactory grainFactory, IServiceProvider serviceProvider, IProviderRuntime providerRuntime, LoadedProviderTypeLoaders loadedProviderTypeLoaders)
         {
+            this.providerRuntime = providerRuntime;
             GrainFactory = grainFactory;
             ServiceProvider = serviceProvider;
+            storageProviderLoader = new ProviderLoader<IStorageProvider>(loadedProviderTypeLoaders);
         }
 
         internal Task LoadStorageProviders(IDictionary<string, ProviderCategoryConfiguration> configs)
         {
-            storageProviderLoader = new ProviderLoader<IStorageProvider>();
-            providerRuntime = SiloProviderRuntime.Instance;
 
             if (!configs.ContainsKey(ProviderCategoryConfiguration.STORAGE_PROVIDER_CATEGORY_NAME))
-                return TaskDone.Done;
+                return Task.CompletedTask;
 
             storageProviderLoader.LoadProviders(configs[ProviderCategoryConfiguration.STORAGE_PROVIDER_CATEGORY_NAME].Providers, this);
             return storageProviderLoader.InitProviders(providerRuntime);
@@ -57,26 +56,29 @@ namespace Orleans.Runtime.Storage
             return LogManager.GetLogger(loggerName, LoggerType.Provider);
         }
 
-        public Guid ServiceId
-        {
-            get { return providerRuntime.ServiceId; }
-        }
+        public Guid ServiceId => providerRuntime.ServiceId;
 
-        public string SiloIdentity
-        {
-            get { return providerRuntime.SiloIdentity; }
-        }
+        public string SiloIdentity => providerRuntime.SiloIdentity;
 
         public IGrainFactory GrainFactory { get; private set; }
         public IServiceProvider ServiceProvider { get; private set; }
         public void SetInvokeInterceptor(InvokeInterceptor interceptor)
         {
+#pragma warning disable 618
             providerRuntime.SetInvokeInterceptor(interceptor);
+#pragma warning restore 618
         }
 
         public InvokeInterceptor GetInvokeInterceptor()
         {
+#pragma warning disable 618
             return providerRuntime.GetInvokeInterceptor();
+#pragma warning restore 618
+        }
+
+        public Task<Tuple<TExtension, TExtensionInterface>> BindExtension<TExtension, TExtensionInterface>(Func<TExtension> newExtensionFunc) where TExtension : IGrainExtension where TExtensionInterface : IGrainExtension
+        {
+            return providerRuntime.BindExtension<TExtension, TExtensionInterface>(newExtensionFunc);
         }
 
         /// <summary>
@@ -105,11 +107,8 @@ namespace Orleans.Runtime.Storage
         }
 
         // used only for testing
-        internal Task LoadEmptyStorageProviders(IProviderRuntime providerRtm)
+        internal Task LoadEmptyStorageProviders()
         {
-            storageProviderLoader = new ProviderLoader<IStorageProvider>();
-            providerRuntime = providerRtm;
-
             storageProviderLoader.LoadProviders(new Dictionary<string, IProviderConfiguration>(), this);
             return storageProviderLoader.InitProviders(providerRuntime);
         }
@@ -119,6 +118,12 @@ namespace Orleans.Runtime.Storage
         {
             await provider.Init(name, this, config);
             storageProviderLoader.AddProvider(name, provider, config);
+        }
+
+        public IStorageProvider GetService(IServiceProvider services, string key)
+        {
+            IStorageProvider provider;
+            return TryGetProvider(key, out provider) ? provider : default(IStorageProvider);
         }
     }
 }

@@ -199,73 +199,58 @@ namespace Orleans.Serialization
                 return "unknown";
             }
         }
-
-        public static bool IsTypeIsInaccessibleForSerialization(Type type, Module fromModule, Assembly fromAssembly)
+        
+        /// <summary>
+        /// Returns <see langword="true"/> if a type is accessible from C# code from the specified assembly, and <see langword="false"/> otherwise.
+        /// </summary>
+        /// <param name="type"></param>
+        /// <param name="assembly"></param>
+        /// <returns></returns>
+        public static bool IsAccessibleFromAssembly(Type type, Assembly assembly)
         {
-            var typeInfo = type.GetTypeInfo();
+            // Arrays are accessible if their element type is accessible.
+            if (type.IsArray) return IsAccessibleFromAssembly(type.GetElementType(), assembly);
 
-            if (typeInfo.IsGenericTypeDefinition)
+            // Pointer and ref types are not accessible.
+            if (type.IsPointer || type.IsByRef) return false;
+
+            // Generic types are only accessible if their generic arguments are accessible.
+            var typeInfo = type.GetTypeInfo();
+            if (type.IsConstructedGenericType)
             {
-                // Guard against invalid type constraints, which appear when generating code for some languages.
+                foreach (var parameter in type.GetGenericArguments())
+                {
+                    if (!IsAccessibleFromAssembly(parameter, assembly)) return false;
+                }
+            }
+            else if (typeInfo.IsGenericTypeDefinition)
+            {
+                // Guard against invalid type constraints, which appear when generating code for some languages, such as F#.
                 foreach (var parameter in typeInfo.GenericTypeParameters)
                 {
-                    if (parameter.GetTypeInfo().GetGenericParameterConstraints().Any(IsSpecialClass))
+                    foreach (var constraint in parameter.GetTypeInfo().GetGenericParameterConstraints())
                     {
-                        return true;
+                        if (IsSpecialClass(constraint)) return false;
                     }
                 }
             }
 
-            if (!typeInfo.IsVisible && type.IsConstructedGenericType)
+            // Internal types are accessible only if the declaring assembly exposes its internals to the target assembly.
+            if (typeInfo.IsNotPublic || typeInfo.IsNestedAssembly || typeInfo.IsNestedFamORAssem)
             {
-                foreach (var inner in typeInfo.GetGenericArguments())
-                {
-                    if (IsTypeIsInaccessibleForSerialization(inner, fromModule, fromAssembly))
-                    {
-                        return true;
-                    }
-                }
-
-                if (IsTypeIsInaccessibleForSerialization(typeInfo.GetGenericTypeDefinition(), fromModule, fromAssembly))
-                {
-                    return true;
-                }
+                if (!AreInternalsVisibleTo(typeInfo.Assembly, assembly)) return false;
             }
 
-            if ((typeInfo.IsNotPublic || !typeInfo.IsVisible) && !AreInternalsVisibleTo(typeInfo.Assembly, fromAssembly))
-            {
-                // subtype is defined in a different assembly from the outer type
-                if (!typeInfo.Module.Equals(fromModule))
-                {
-                    return true;
-                }
+            // Nested types which are private or protected are not accessible.
+            if (typeInfo.IsNestedPrivate || typeInfo.IsNestedFamily || typeInfo.IsNestedFamANDAssem) return false;
 
-                // subtype defined in a different assembly from the one we are generating serializers for.
-                if (!typeInfo.Assembly.Equals(fromAssembly))
-                {
-                    return true;
-                }
-            }
-
-            // For arrays, check the element type.
-            if (typeInfo.IsArray)
-            {
-                if (IsTypeIsInaccessibleForSerialization(typeInfo.GetElementType(), fromModule, fromAssembly))
-                {
-                    return true;
-                }
-            }
-
-            // For nested types, check that the declaring type is accessible.
+            // Nested types are otherwise accessible if their declaring type is accessible.
             if (typeInfo.IsNested)
             {
-                if (IsTypeIsInaccessibleForSerialization(typeInfo.DeclaringType, fromModule, fromAssembly))
-                {
-                    return true;
-                }
+                return IsAccessibleFromAssembly(type.DeclaringType, assembly);
             }
 
-            return typeInfo.IsNestedPrivate || typeInfo.IsNestedFamily || type.IsPointer;
+            return true;
         }
 
         /// <summary>
@@ -284,10 +269,19 @@ namespace Orleans.Serialization
                 return false;
             }
 
+            if (Equals(fromAssembly, toAssembly)) return true;
+
             // Check InternalsVisibleTo attributes on the from-assembly, pointing to the to-assembly.
-            var serializationAssemblyName = toAssembly.GetName().FullName;
+            var fullName = toAssembly.GetName().FullName;
+            var shortName = toAssembly.GetName().Name;
             var internalsVisibleTo = fromAssembly.GetCustomAttributes<InternalsVisibleToAttribute>();
-            return internalsVisibleTo.Any(_ => _.AssemblyName == serializationAssemblyName);
+            foreach (var attr in internalsVisibleTo)
+            {
+                if (string.Equals(attr.AssemblyName, fullName, StringComparison.Ordinal)) return true;
+                if (string.Equals(attr.AssemblyName, shortName, StringComparison.Ordinal)) return true;
+            }
+
+            return false;
         }
 
         private static bool IsSpecialClass(Type type)

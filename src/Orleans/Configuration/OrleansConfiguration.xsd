@@ -820,6 +820,18 @@
           </xs:sequence>
         </xs:complexType>
       </xs:element>
+      <xs:element name="LogConsistencyProviders" minOccurs="0" maxOccurs="1">
+        <xs:annotation>
+          <xs:documentation>
+            The optional LogConsistencyProviders element contains configuration for log-consistency provider instances.
+          </xs:documentation>
+        </xs:annotation>
+        <xs:complexType>
+          <xs:sequence>
+            <xs:element name="Provider" type="tns:ProviderInstanceConfig" minOccurs="0" maxOccurs="unbounded" />
+          </xs:sequence>
+        </xs:complexType>
+      </xs:element>
       <xs:element name="StreamProviders" minOccurs="0" maxOccurs="1" type="tns:StreamProvidersConfig" />
       <xs:element name="Application" minOccurs="0" maxOccurs="1">
         <xs:complexType>
@@ -1010,6 +1022,14 @@
       </xs:documentation>
     </xs:annotation>
     <xs:sequence>
+      <xs:element name="Startup" minOccurs="0" maxOccurs="1" type="tns:StartupConfiguration">
+        <xs:annotation>
+          <xs:documentation>
+            The Startup element specifies the start-up class to be used to bootstrap dependency injection.
+            Typically the Startup element is filled in for the default configuration.
+          </xs:documentation>
+        </xs:annotation>
+      </xs:element>
       <xs:element name="Networking" minOccurs="0" type="tns:IPEndPoint">
         <xs:annotation>
           <xs:documentation>
@@ -1277,5 +1297,18 @@
       </xs:annotation>
     </xs:attribute>
   </xs:complexType>
-
+  <xs:complexType name="StartupConfiguration">
+    <xs:annotation>
+      <xs:documentation>
+        Start-up class configuration for dependency injection.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:attribute name="Type" use="required" type="xs:string">
+      <xs:annotation>
+        <xs:documentation>
+          The assembly qualified name of the start-up class to be used to bootstrap dependency injection.
+        </xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
+  </xs:complexType>
 </xs:schema>

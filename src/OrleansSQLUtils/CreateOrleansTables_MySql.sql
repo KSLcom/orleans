@@ -226,6 +226,12 @@ CREATE TABLE Storage
 ) ROW_FORMAT = COMPRESSED KEY_BLOCK_SIZE = 16;
 ALTER TABLE Storage ADD INDEX IX_Storage (GrainIdHash, GrainTypeHash);
 
+-- The following alters the column to JSON format if MySQL is at least of version 5.7.8.
+-- See more at https://dev.mysql.com/doc/refman/5.7/en/json.html for JSON and
+-- http://dev.mysql.com/doc/refman/5.7/en/comments.html for the syntax.
+/*!50708 ALTER TABLE Storage MODIFY COLUMN PayloadJson JSON */;
+
+
 INSERT INTO OrleansQuery(QueryKey, QueryText)
 VALUES
 (
@@ -250,7 +256,7 @@ VALUES
 	(
 		DeploymentId
 	)
-	SELECT @DeploymentId
+	SELECT * FROM ( SELECT @DeploymentId ) AS TMP
 	WHERE NOT EXISTS
 	(
 	SELECT 1
@@ -302,7 +308,7 @@ BEGIN
 		StartTime,
 		IAmAliveTime
 	)
-	SELECT
+	SELECT * FROM ( SELECT
 		_DeploymentId,
 		_Address,
 		_Port,
@@ -312,7 +318,7 @@ BEGIN
 		_Status,
 		_ProxyPort,
 		_StartTime,
-		_IAmAliveTime
+		_IAmAliveTime) AS TMP
 	WHERE NOT EXISTS
 	(
 	SELECT 1
@@ -478,7 +484,7 @@ BEGIN
 			ModifiedOn,
 			Version
 		)
-		SELECT
+		SELECT * FROM ( SELECT
 			_GrainIdHash,
 			_GrainIdN0,
 			_GrainIdN1,
@@ -490,7 +496,7 @@ BEGIN
 			_PayloadJson,
 			_PayloadXml,
             UTC_TIMESTAMP(),
-			1
+			1) AS TMP
 		WHERE NOT EXISTS
 		(
 			-- There should not be any version of this grain state.

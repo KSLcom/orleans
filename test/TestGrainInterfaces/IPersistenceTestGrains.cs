@@ -136,6 +136,15 @@ namespace UnitTests.GrainInterfaces
         Task<int> GetValue();
         Task DoWrite(int val);
         Task<int> DoRead();
+        Task<string> GetActivationId();
+    }
+
+    public interface IPersistenceProviderErrorProxyGrain : IGrainWithGuidKey
+    {
+        Task<int> GetValue(IPersistenceProviderErrorGrain other);
+        Task DoWrite(int val, IPersistenceProviderErrorGrain other);
+        Task<int> DoRead(IPersistenceProviderErrorGrain other);
+        Task<string> GetActivationId();
     }
 
     public interface IPersistenceUserHandledErrorGrain : IGrainWithGuidKey

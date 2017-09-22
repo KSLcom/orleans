@@ -120,12 +120,13 @@ namespace Orleans.Runtime.Configuration
             CalculateOverrides();
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Usage", "CA2202:Do not dispose objects multiple times")]
         private static string WriteXml(XmlElement element)
         {
-            using(var sw = new StringWriter())
+            using (var sw = new StringWriter())
             {
-                using(var xw = XmlWriter.Create(sw))
-                { 
+                using (var xw = XmlWriter.Create(sw))
+                {
                     element.WriteTo(xw);
                     xw.Flush();
                     return sw.ToString();
@@ -179,7 +180,7 @@ namespace Orleans.Runtime.Configuration
                     Globals.SetReminderServiceType(GlobalConfiguration.ReminderServiceProviderType.ReminderTableGrain);
                 }
             }
-            
+
             foreach (var p in overrideXml)
             {
                 var n = new NodeConfiguration(Defaults);
@@ -327,7 +328,7 @@ namespace Orleans.Runtime.Configuration
             }
             foreach (var attribute in AttributeNames(test))
             {
-                if (! allowed.HasAttribute(attribute))
+                if (!allowed.HasAttribute(attribute))
                 {
                     disallowed.Add(prefix + "/@" + attribute);
                 }
@@ -339,7 +340,7 @@ namespace Orleans.Runtime.Configuration
                 if (testChild == null)
                     continue;
                 XmlElement allowedChild;
-                if (! allowedChildren.TryGetValue(testChild.LocalName, out allowedChild))
+                if (!allowedChildren.TryGetValue(testChild.LocalName, out allowedChild))
                 {
                     disallowed.Add(prefix + "/" + testChild.LocalName);
                 }
@@ -418,58 +419,55 @@ namespace Orleans.Runtime.Configuration
 
         internal static async Task<IPAddress> ResolveIPAddress(string addrOrHost, byte[] subnet, AddressFamily family)
         {
-            var loopback = (family == AddressFamily.InterNetwork) ? IPAddress.Loopback : IPAddress.IPv6Loopback;
+            var loopback = family == AddressFamily.InterNetwork ? IPAddress.Loopback : IPAddress.IPv6Loopback;
 
-            if (addrOrHost.Equals("loopback", StringComparison.OrdinalIgnoreCase) ||
-                addrOrHost.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
-                addrOrHost.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase))
+            // IF the address is an empty string, default to the local machine
+            if (string.IsNullOrEmpty(addrOrHost))
+            {
+                addrOrHost = Dns.GetHostName();
+            }
+
+            // Fix StreamFilteringTests_SMS tests
+            if (addrOrHost.Equals("loopback", StringComparison.OrdinalIgnoreCase))
             {
                 return loopback;
             }
-            else if (addrOrHost == "0.0.0.0")
+
+            // check if addrOrHost is a valid IP address including loopback (127.0.0.0/8, ::1) and any (0.0.0.0/0, ::) addresses
+            IPAddress address;
+            if (IPAddress.TryParse(addrOrHost, out address))
             {
-                return IPAddress.Any;
+                return address;
             }
-            else
+
+            var candidates = new List<IPAddress>();
+
+            // Get IP address from DNS. If addrOrHost is localhost will 
+            // return loopback IPv4 address (or IPv4 and IPv6 addresses if OS is supported IPv6)
+            var nodeIps = await Dns.GetHostAddressesAsync(addrOrHost);
+            foreach (var nodeIp in nodeIps.Where(x => x.AddressFamily == family))
             {
-                // IF the address is an empty string, default to the local machine, but not the loopback address
-                if (String.IsNullOrEmpty(addrOrHost))
+                // If the subnet does not match - we can't resolve this address.
+                // If subnet is not specified - pick smallest address deterministically.
+                if (subnet == null)
                 {
-                    addrOrHost = Dns.GetHostName();
-
-                    // If for some reason we get "localhost" back. This seems to have happened to somebody.
-                    if (addrOrHost.Equals("localhost", StringComparison.OrdinalIgnoreCase))
-                        return loopback;
+                    candidates.Add(nodeIp);
                 }
-
-                var candidates = new List<IPAddress>();
-                IPAddress[] nodeIps = await Dns.GetHostAddressesAsync(addrOrHost);
-                foreach (var nodeIp in nodeIps)
+                else
                 {
-                    if (nodeIp.AddressFamily != family || nodeIp.Equals(loopback)) continue;
-
-                    // If the subnet does not match - we can't resolve this address.
-                    // If subnet is not specified - pick smallest address deterministically.
-                    if (subnet == null)
+                    var ip = nodeIp;
+                    if (subnet.Select((b, i) => ip.GetAddressBytes()[i] == b).All(x => x))
                     {
                         candidates.Add(nodeIp);
                     }
-                    else
-                    {
-                        IPAddress ip = nodeIp;
-                        if (subnet.Select((b, i) => ip.GetAddressBytes()[i] == b).All(x => x))
-                        {
-                            candidates.Add(nodeIp);
-                        }
-                    }
                 }
-                if (candidates.Count > 0)
-                {
-                    return PickIPAddress(candidates);
-                }
-                var subnetStr = Utils.EnumerableToString(subnet, null, ".", false);
-                throw new ArgumentException("Hostname '" + addrOrHost + "' with subnet " + subnetStr + " and family " + family + " is not a valid IP address or DNS name");
             }
+            if (candidates.Count > 0)
+            {
+                return PickIPAddress(candidates);
+            }
+            var subnetStr = Utils.EnumerableToString(subnet, null, ".", false);
+            throw new ArgumentException("Hostname '" + addrOrHost + "' with subnet " + subnetStr + " and family " + family + " is not a valid IP address or DNS name");
         }
 
         private static IPAddress PickIPAddress(IReadOnlyList<IPAddress> candidates)
@@ -483,7 +481,7 @@ namespace Orleans.Runtime.Configuration
                 }
                 else
                 {
-                    if(CompareIPAddresses(addr, chosen)) // pick smallest address deterministically
+                    if (CompareIPAddresses(addr, chosen)) // pick smallest address deterministically
                         chosen = addr;
                 }
             }
@@ -500,7 +498,7 @@ namespace Orleans.Runtime.Configuration
 
             // compare starting from most significant octet.
             // 10.68.20.21 < 10.98.05.04
-            for (int i = 0; i < lbytes.Length; i++) 
+            for (int i = 0; i < lbytes.Length; i++)
             {
                 if (lbytes[i] != rbytes[i])
                 {
@@ -524,10 +522,10 @@ namespace Orleans.Runtime.Configuration
 
             var candidates = new List<IPAddress>();
             // loop through interfaces
-            for (int i=0; i < netInterfaces.Length; i++)
+            for (int i = 0; i < netInterfaces.Length; i++)
             {
                 NetworkInterface netInterface = netInterfaces[i];
-                
+
                 if (netInterface.OperationalStatus != OperationalStatus.Up)
                 {
                     // Skip network interfaces that are not operational
@@ -546,7 +544,7 @@ namespace Orleans.Runtime.Configuration
                     if (ip.Address.AddressFamily == family) // Picking the first address of the requested family for now. Will need to revisit later
                     {
                         //don't pick loopback address, unless we were asked for a loopback interface
-                        if(!(isLoopbackInterface && ip.Address.Equals(loopback)))
+                        if (!(isLoopbackInterface && ip.Address.Equals(loopback)))
                         {
                             candidates.Add(ip.Address); // collect all candidates.
                         }
@@ -582,7 +580,7 @@ namespace Orleans.Runtime.Configuration
             config.Defaults.HostNameOrIPAddress = "localhost";
             config.Defaults.Port = siloPort;
             config.Defaults.ProxyGatewayEndpoint = new IPEndPoint(IPAddress.Loopback, gatewayPort);
-            
+
             config.PrimaryNode = siloAddress;
 
             return config;

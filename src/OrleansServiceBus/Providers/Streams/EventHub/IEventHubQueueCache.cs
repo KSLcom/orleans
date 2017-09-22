@@ -1,8 +1,8 @@
-﻿
-using System;
-using Microsoft.ServiceBus.Messaging;
+﻿using System;
+using Microsoft.Azure.EventHubs;
 using Orleans.Providers.Streams.Common;
 using Orleans.Streams;
+using System.Collections.Generic;
 
 namespace Orleans.ServiceBus.Providers
 {
@@ -12,12 +12,21 @@ namespace Orleans.ServiceBus.Providers
     public interface IEventHubQueueCache : IQueueFlowController, IDisposable
     {
         /// <summary>
+        /// Add a list of EventHub EventData to the cache.
+        /// </summary>
+        /// <param name="message"></param>
+        /// <param name="dequeueTimeUtc"></param>
+        /// <returns></returns>
+        List<StreamPosition> Add(List<EventData> message, DateTime dequeueTimeUtc);
+
+        /// <summary>
         /// Add an EventHub EventData to the cache.
         /// </summary>
         /// <param name="message"></param>
         /// <param name="dequeueTimeUtc"></param>
         /// <returns></returns>
         StreamPosition Add(EventData message, DateTime dequeueTimeUtc);
+
         /// <summary>
         /// Get a cursor into the cache to read events from a stream.
         /// </summary>
@@ -32,5 +41,16 @@ namespace Orleans.ServiceBus.Providers
         /// <param name="message"></param>
         /// <returns></returns>
         bool TryGetNextMessage(object cursorObj, out IBatchContainer message);
+
+        /// <summary>
+        /// Add cache pressure monitor to the cache's back pressure algorithm
+        /// </summary>
+        /// <param name="monitor"></param>
+        void AddCachePressureMonitor(ICachePressureMonitor monitor);
+
+        /// <summary>
+        /// Send purge signal to the cache, the cache will perform a time based purge on its cached messages
+        /// </summary>
+        void SignalPurge();
     }
 }

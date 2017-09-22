@@ -51,12 +51,25 @@ namespace Orleans.Providers
         /// <summary>
         /// Sets the invocation interceptor which will be invoked on each request.
         /// </summary>
+        [Obsolete("Register InvokeInterceptor instances with the service provider during configuration.")]
         void SetInvokeInterceptor(InvokeInterceptor interceptor);
 
         /// <summary>
         /// Gets the invocation interceptor which will be invoked on each request.
         /// </summary>
+        [Obsolete("Retrieve InvokeInterceptor instances from the ServiceProvider property.")]
         InvokeInterceptor GetInvokeInterceptor();
+
+        /// <summary>
+        /// Binds an extension to an addressable object, if not already done.
+        /// </summary>
+        /// <typeparam name="TExtension">The type of the extension (e.g. StreamConsumerExtension).</typeparam>
+        /// <typeparam name="TExtensionInterface">The public interface type of the implementation.</typeparam>
+        /// <param name="newExtensionFunc">A factory function that constructs a new extension object.</param>
+        /// <returns>A tuple, containing first the extension and second an addressable reference to the extension's interface.</returns>
+        Task<Tuple<TExtension, TExtensionInterface>> BindExtension<TExtension, TExtensionInterface>(Func<TExtension> newExtensionFunc)
+            where TExtension : IGrainExtension
+            where TExtensionInterface : IGrainExtension;
     }
 
     /// <summary>
@@ -66,6 +79,15 @@ namespace Orleans.Providers
     {
         // for now empty, later can add storage specific runtime capabilities.
     }
+
+    /// <summary>
+    /// Provider-facing interface for log consistency
+    /// </summary>
+    public interface ILogConsistencyProviderRuntime : IProviderRuntime
+    {
+        // for now empty, later can add provider specific runtime capabilities.
+    }
+
 
     /// <summary>
     /// Handles the invocation of the provided <paramref name="request"/>.

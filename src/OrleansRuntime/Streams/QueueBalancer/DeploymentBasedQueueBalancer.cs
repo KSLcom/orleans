@@ -5,9 +5,29 @@ using System.Collections.ObjectModel;
 using System.Linq;
 using System.Threading.Tasks;
 using Orleans.Runtime;
+using Orleans.Runtime.Configuration;
+using Orleans.Providers;
 
 namespace Orleans.Streams
 {
+    public class StaticClusterConfigDeploymentBalancer : DeploymentBasedQueueBalancer
+    {
+        public StaticClusterConfigDeploymentBalancer(
+            ISiloStatusOracle siloStatusOracle,
+            ClusterConfiguration clusterConfiguration)
+            : base(siloStatusOracle, new StaticClusterDeploymentConfiguration(clusterConfiguration), true)
+        { }
+    }
+
+    public class DynamicClusterConfigDeploymentBalancer : DeploymentBasedQueueBalancer
+    {
+        public DynamicClusterConfigDeploymentBalancer(
+            ISiloStatusOracle siloStatusOracle,
+            ClusterConfiguration clusterConfiguration)
+            : base(siloStatusOracle, new StaticClusterDeploymentConfiguration(clusterConfiguration), false)
+        { }
+    }
+
     /// <summary>
     /// DeploymentBasedQueueBalancer is a stream queue balancer that uses deployment information to
     /// help balance queue distribution.
@@ -15,23 +35,19 @@ namespace Orleans.Streams
     /// to expect and uses a silo status oracle to determine which of the silos are available.  With
     /// this information it tries to balance the queues using a best fit resource balancing algorithm.
     /// </summary>
-    internal class DeploymentBasedQueueBalancer : ISiloStatusListener, IStreamQueueBalancer
+    public class DeploymentBasedQueueBalancer : QueueBalancerBase, ISiloStatusListener, IStreamQueueBalancer
     {
-        private readonly TimeSpan siloMaturityPeriod;
+        private TimeSpan siloMaturityPeriod;
         private readonly ISiloStatusOracle siloStatusOracle;
         private readonly IDeploymentConfiguration deploymentConfig;
-        private readonly ReadOnlyCollection<QueueId> allQueues;
-        private readonly List<IStreamQueueBalanceListener> queueBalanceListeners;
+        private ReadOnlyCollection<QueueId> allQueues;
         private readonly ConcurrentDictionary<SiloAddress, bool> immatureSilos;
         private readonly bool isFixed;
         private bool isStarting;
 
-        
         public DeploymentBasedQueueBalancer(
             ISiloStatusOracle siloStatusOracle,
             IDeploymentConfiguration deploymentConfig,
-            IStreamQueueMapper queueMapper,
-            TimeSpan maturityPeriod,
             bool isFixed)
         {
             if (siloStatusOracle == null)
@@ -42,18 +58,11 @@ namespace Orleans.Streams
             {
                 throw new ArgumentNullException("deploymentConfig");
             }
-            if (queueMapper == null)
-            {
-                throw new ArgumentNullException("queueMapper");
-            }
 
             this.siloStatusOracle = siloStatusOracle;
             this.deploymentConfig = deploymentConfig;
-            allQueues = new ReadOnlyCollection<QueueId>(queueMapper.GetAllQueues().ToList());
-            queueBalanceListeners = new List<IStreamQueueBalanceListener>();
             immatureSilos = new ConcurrentDictionary<SiloAddress, bool>();
             this.isFixed = isFixed;
-            siloMaturityPeriod = maturityPeriod;
             isStarting = true;
 
             // register for notification of changes to silo status for any silo in the cluster
@@ -65,10 +74,23 @@ namespace Orleans.Streams
             {
                 immatureSilos[silo] = false;     // record as mature
             }
-
-            NotifyAfterStart().Ignore();
         }
 
+        public override Task Initialize(string strProviderName,
+            IStreamQueueMapper queueMapper,
+            TimeSpan siloMaturityPeriod,
+            IProviderConfiguration providerConfig)
+        {
+            if (queueMapper == null)
+            {
+                throw new ArgumentNullException("queueMapper");
+            }
+            this.allQueues = new ReadOnlyCollection<QueueId>(queueMapper.GetAllQueues().ToList());
+            this.siloMaturityPeriod = siloMaturityPeriod;
+            NotifyAfterStart().Ignore();
+            return Task.CompletedTask;
+        }
+        
         private async Task NotifyAfterStart()
         {
             await Task.Delay(siloMaturityPeriod);
@@ -124,7 +146,7 @@ namespace Orleans.Streams
             immatureSilos[updatedSilo] = false;     // record as mature
         }
 
-        public IEnumerable<QueueId> GetMyQueues()
+        public override IEnumerable<QueueId> GetMyQueues()
         {
             BestFitBalancer<string, QueueId> balancer = GetBalancer();
             bool useIdealDistribution = isFixed || isStarting;
@@ -146,47 +168,6 @@ namespace Orleans.Streams
             return Enumerable.Empty<QueueId>();
         }
 
-        public bool SubscribeToQueueDistributionChangeEvents(IStreamQueueBalanceListener observer)
-        {
-            if (observer == null)
-            {
-                throw new ArgumentNullException("observer");
-            }
-            lock (queueBalanceListeners)
-            {
-                if (queueBalanceListeners.Contains(observer))
-                {
-                    return false;
-                }
-                queueBalanceListeners.Add(observer);
-                return true;
-            }
-        }
-
-        public bool UnSubscribeToQueueDistributionChangeEvents(IStreamQueueBalanceListener observer)
-        {
-            if (observer == null)
-            {
-                throw new ArgumentNullException("observer");
-            }
-            lock (queueBalanceListeners)
-            {
-                return queueBalanceListeners.Contains(observer) && queueBalanceListeners.Remove(observer);
-            }
-        }
-        
-        /// <summary>
-        /// Checks to see if deployment configuration has changed, by adding or removing silos.
-        /// If so, it updates the list of all silo names and creates a new resource balancer.
-        /// This should occure rarely.
-        /// </summary>
-        private BestFitBalancer<string, QueueId> GetBalancer()
-        {
-            var allSiloNames = deploymentConfig.GetAllSiloNames();
-            // rebuild balancer with new list of instance names
-            return new BestFitBalancer<string, QueueId>(allSiloNames, allQueues);
-        }
-
         private static List<string> GetActiveSilos(ISiloStatusOracle siloStatusOracle, ConcurrentDictionary<SiloAddress, bool> immatureSilos)
         {
             var activeSiloNames = new List<string>();
@@ -203,6 +184,18 @@ namespace Orleans.Streams
                 }
             }
             return activeSiloNames;
+        }
+
+        /// <summary>
+        /// Checks to see if deployment configuration has changed, by adding or removing silos.
+        /// If so, it updates the list of all silo names and creates a new resource balancer.
+        /// This should occure rarely.
+        /// </summary>
+        private BestFitBalancer<string, QueueId> GetBalancer()
+        {
+            var allSiloNames = deploymentConfig.GetAllSiloNames();
+            // rebuild balancer with new list of instance names
+            return new BestFitBalancer<string, QueueId>(allSiloNames, allQueues);
         }
 
         private static HashSet<QueueId> GetQueuesOfImmatureSilos(ISiloStatusOracle siloStatusOracle, 

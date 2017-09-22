@@ -8,7 +8,7 @@ using Orleans.Streams;
 using Orleans.TestingHost;
 using Tester;
 using Tester.TestStreamProviders.Controllable;
-using UnitTests.Tester;
+using TestExtensions;
 using Xunit;
 
 namespace UnitTests.StreamingTests
@@ -25,7 +25,7 @@ namespace UnitTests.StreamingTests
                 var options = new TestClusterOptions(2);
                 var settings = new Dictionary<string, string>
                     {
-                        {PersistentStreamProviderConfig.QUEUE_BALANCER_TYPE,StreamQueueBalancerType.DynamicClusterConfigDeploymentBalancer.ToString()},
+                        {PersistentStreamProviderConfig.QUEUE_BALANCER_TYPE, StreamQueueBalancerType.DynamicClusterConfigDeploymentBalancer.AssemblyQualifiedName},
                         {PersistentStreamProviderConfig.STREAM_PUBSUB_TYPE, StreamPubSubType.ImplicitOnly.ToString()}
                     };
                 options.ClusterConfiguration.Globals.RegisterStreamProvider<ControllableTestStreamProvider>(StreamProviderName, settings);
@@ -33,7 +33,7 @@ namespace UnitTests.StreamingTests
             }
         }
 
-        private Fixture fixture;
+        private readonly Fixture fixture;
 
         public ControllableStreamProviderTests(Fixture fixture)
         {
@@ -43,23 +43,23 @@ namespace UnitTests.StreamingTests
         [Fact, TestCategory("Functional"), TestCategory("Streaming")]
         public async Task ControllableAdapterEchoTest()
         {
-            logger.Info("************************ ControllableAdapterEchoTest *********************************");
+            this.fixture.Logger.Info("************************ ControllableAdapterEchoTest *********************************");
             const string echoArg = "blarg";
-            await ControllableAdapterEchoTest(ControllableTestStreamProviderCommands.AdapterEcho, echoArg);
+            await this.ControllableAdapterEchoTestRunner(ControllableTestStreamProviderCommands.AdapterEcho, echoArg);
         }
 
         [Fact, TestCategory("Functional"), TestCategory("Streaming")]
         public async Task ControllableAdapterFactoryEchoTest()
         {
-            logger.Info("************************ ControllableAdapterFactoryEchoTest *********************************");
+            this.fixture.Logger.Info("************************ ControllableAdapterFactoryEchoTest *********************************");
             const string echoArg = "blarg";
-            await ControllableAdapterEchoTest(ControllableTestStreamProviderCommands.AdapterFactoryEcho, echoArg);
+            await this.ControllableAdapterEchoTestRunner(ControllableTestStreamProviderCommands.AdapterFactoryEcho, echoArg);
         }
 
-        private async Task ControllableAdapterEchoTest(ControllableTestStreamProviderCommands command, object echoArg)
+        private async Task ControllableAdapterEchoTestRunner(ControllableTestStreamProviderCommands command, object echoArg)
         {
-            logger.Info("************************ ControllableAdapterEchoTest *********************************");
-            var mgmt = GrainClient.GrainFactory.GetGrain<IManagementGrain>(0);
+            this.fixture.Logger.Info("************************ ControllableAdapterEchoTest *********************************");
+            var mgmt = this.fixture.GrainFactory.GetGrain<IManagementGrain>(0);
 
             object[] results = await mgmt.SendControlCommandToProvider(this.fixture.StreamProviderTypeName, Fixture.StreamProviderName, (int)command, echoArg);
             Assert.Equal(2, results.Length);

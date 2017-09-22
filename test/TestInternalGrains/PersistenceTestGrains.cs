@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 using Orleans;
 using Orleans.Concurrency;
 using Orleans.Core;
@@ -13,9 +14,34 @@ using Orleans.Runtime.Scheduler;
 using Orleans.Serialization;
 using UnitTests.GrainInterfaces;
 using Xunit;
+using Orleans.Storage;
 
 namespace UnitTests.Grains
 {
+    internal static class TestRuntimeEnvironmentUtility
+    {
+        public static string CaptureRuntimeEnvironment()
+        {
+            var callStack = Utils.GetStackTrace(1); // Don't include this method in stack trace
+            return String.Format(
+                "   TaskScheduler={0}" + Environment.NewLine
+                + "   RuntimeContext={1}" + Environment.NewLine
+                + "   WorkerPoolThread={2}" + Environment.NewLine
+                + "   WorkerPoolThread.CurrentWorkerThread.ManagedThreadId={3}" + Environment.NewLine
+                + "   Thread.CurrentThread.ManagedThreadId={4}" + Environment.NewLine
+                + "   StackTrace=" + Environment.NewLine
+                + "   {5}",
+                TaskScheduler.Current,
+                RuntimeContext.Current,
+                WorkerPoolThread.CurrentWorkerThread == null ? "null" : WorkerPoolThread.CurrentWorkerThread.Name,
+                WorkerPoolThread.CurrentWorkerThread == null
+                    ? "null"
+                    : WorkerPoolThread.CurrentWorkerThread.ManagedThreadId.ToString(CultureInfo.InvariantCulture),
+                System.Threading.Thread.CurrentThread.ManagedThreadId,
+                callStack);
+        }
+    }
+
     [Serializable]
     public class PersistenceTestGrainState
     {
@@ -42,7 +68,7 @@ namespace UnitTests.Grains
     {
         public override Task OnActivateAsync()
         {
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task<bool> CheckStateInit()
@@ -58,14 +84,14 @@ namespace UnitTests.Grains
 
         public Task<string> CheckProviderType()
         {
-            var storageProvider = ((ActivationData) Data).StorageProvider;
+            IStorageProvider storageProvider = this.GetStorageProvider(this.ServiceProvider);
             Assert.NotNull(storageProvider);
             return Task.FromResult(storageProvider.GetType().FullName);
         }
 
         public Task DoSomething()
         {
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task DoWrite(int val)
@@ -103,7 +129,7 @@ namespace UnitTests.Grains
     {
         public override Task OnActivateAsync()
         {
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task<int> GetValue()
@@ -122,14 +148,19 @@ namespace UnitTests.Grains
             await ReadStateAsync();
             return State.Field1;
         }
+
+        public Task<string> GetActivationId() => Task.FromResult(this.Data.ActivationId.ToString());
     }
 
     [Orleans.Providers.StorageProvider(ProviderName = "ErrorInjector")]
     public class PersistenceUserHandledErrorGrain : Grain<PersistenceTestGrainState>, IPersistenceUserHandledErrorGrain
     {
+        private SerializationManager serializationManager;
+
         public override Task OnActivateAsync()
         {
-            return TaskDone.Done;
+            this.serializationManager = this.ServiceProvider.GetRequiredService<SerializationManager>();
+            return Task.CompletedTask;
         }
 
         public Task<int> GetValue()
@@ -139,7 +170,7 @@ namespace UnitTests.Grains
 
         public async Task DoWrite(int val, bool recover)
         {
-            var original = SerializationManager.DeepCopy(State);
+            var original = this.serializationManager.DeepCopy(State);
             try
             {
                 State.Field1 = val;
@@ -156,7 +187,7 @@ namespace UnitTests.Grains
 
         public async Task<int> DoRead(bool recover)
         {
-            var original = SerializationManager.DeepCopy(State);
+            var original = this.serializationManager.DeepCopy(State);
             try
             {
                 await ReadStateAsync();
@@ -172,12 +203,23 @@ namespace UnitTests.Grains
         }
     }
 
+    public class PersistenceProviderErrorProxyGrain : Grain, IPersistenceProviderErrorProxyGrain
+    {
+        public Task<int> GetValue(IPersistenceProviderErrorGrain other) => other.GetValue();
+
+        public Task DoWrite(int val, IPersistenceProviderErrorGrain other) => other.DoWrite(val);
+
+        public Task<int> DoRead(IPersistenceProviderErrorGrain other) => other.DoRead();
+
+        public Task<string> GetActivationId() => Task.FromResult(this.Data.ActivationId.ToString());
+    }
+
     [Orleans.Providers.StorageProvider(ProviderName = "test1")]
     public class PersistenceErrorGrain : Grain<PersistenceTestGrainState>, IPersistenceErrorGrain
     {
         public override Task OnActivateAsync()
         {
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task<int> GetValue()
@@ -219,7 +261,7 @@ namespace UnitTests.Grains
         public override Task OnActivateAsync()
         {
             GetLogger().Warn(1, "OnActivateAsync");
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task DoSomething()
@@ -236,13 +278,13 @@ namespace UnitTests.Grains
         public override Task OnActivateAsync()
         {
             GetLogger().Info(1, "OnActivateAsync");
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task DoSomething()
         {
             GetLogger().Info(1, "DoSomething");
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
     }
 
@@ -252,7 +294,7 @@ namespace UnitTests.Grains
     {
         public override Task OnActivateAsync()
         {
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task<int> GetValue()
@@ -284,7 +326,7 @@ namespace UnitTests.Grains
     {
         public override Task OnActivateAsync()
         {
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task<T> GetValue()
@@ -316,7 +358,7 @@ namespace UnitTests.Grains
     {
         public override Task OnActivateAsync()
         {
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task<int> GetValue()
@@ -355,7 +397,7 @@ namespace UnitTests.Grains
     {
         public override Task OnActivateAsync()
         {
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task<int> GetValue()
@@ -375,6 +417,8 @@ namespace UnitTests.Grains
             return State.Field1;
         }
 
+        public Task<string> GetActivationId() => Task.FromResult(this.Data.ActivationId.ToString());
+
         public Task DoDelete()
         {
             return ClearStateAsync(); // Automatically marks this grain as DeactivateOnIdle 
@@ -387,7 +431,7 @@ namespace UnitTests.Grains
     {
         public override Task OnActivateAsync()
         {
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task<T> GetValue()
@@ -419,7 +463,7 @@ namespace UnitTests.Grains
     {
         public override Task OnActivateAsync()
         {
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task<int> GetValue()
@@ -459,7 +503,7 @@ namespace UnitTests.Grains
     {
         public override Task OnActivateAsync()
         {
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task<int> GetValue()
@@ -550,7 +594,7 @@ namespace UnitTests.Grains
             else
                 throw new Exception("Already a friend.");
 
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task<List<IUser>> GetFriends()
@@ -634,7 +678,7 @@ namespace UnitTests.Grains
         {
             logger.Info("Setup");
             _other = other;
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public async Task SetOne(int val)
@@ -745,23 +789,18 @@ namespace UnitTests.Grains
         {
             if (executing)
             {
-                var errorMsg = String.Format(
-                    "Found out that this grain is already in the middle of execution."
-                    + " Single threaded-ness violation!"
-                    + ".\n{0}",
-                    CaptureRuntimeEnvironment());
-                logger.Error(1, "\n\n\n\n" + errorMsg + "\n\n\n\n");
+                var errorMsg = "Found out that this grain is already in the middle of execution."
+                               + " Single threaded-ness violation!\n" +
+                               TestRuntimeEnvironmentUtility.CaptureRuntimeEnvironment();
+                this.logger.Error(1, "\n\n\n\n" + errorMsg + "\n\n\n\n");
                 throw new Exception(errorMsg);
                 //Environment.Exit(1);
             }
 
             if (RuntimeContext.Current == null || RuntimeContext.Current.ActivationContext == null)
             {
-                var errorMsg = String.Format(
-                    "Found RuntimeContext.Current == null."
-                    + ".\n{0}",
-                    CaptureRuntimeEnvironment());
-                logger.Error(1, "\n\n\n\n" + errorMsg + "\n\n\n\n");
+                var errorMsg = "Found RuntimeContext.Current == null.\n" + TestRuntimeEnvironmentUtility.CaptureRuntimeEnvironment();
+                this.logger.Error(1, "\n\n\n\n" + errorMsg + "\n\n\n\n");
                 throw new Exception(errorMsg);
                 //Environment.Exit(1);
             }
@@ -777,8 +816,9 @@ namespace UnitTests.Grains
         }
     }
 
-    public class NonReentrentStressGrainWithoutState : Grain, INonReentrentStressGrainWithoutState
+    internal class NonReentrentStressGrainWithoutState : Grain, INonReentrentStressGrainWithoutState
     {
+        private readonly OrleansTaskScheduler scheduler;
         private const int Multiple = 100;
         private Logger logger;
         private bool executing;
@@ -799,15 +839,19 @@ namespace UnitTests.Grains
             new Tuple<string, Severity>("Scheduler", Severity.Info),
             new Tuple<string, Severity>("Scheduler.ActivationTaskScheduler", Severity.Info)
         };
-
-        public NonReentrentStressGrainWithoutState()
+        
+        public NonReentrentStressGrainWithoutState(OrleansTaskScheduler scheduler)
         {
+            this.scheduler = scheduler;
         }
 
-        public NonReentrentStressGrainWithoutState(IGrainIdentity identity, IGrainRuntime runtime)
+        private NonReentrentStressGrainWithoutState(IGrainIdentity identity, IGrainRuntime runtime)
             : base(identity, runtime)
         {
         }
+
+        public static NonReentrentStressGrainWithoutState Create(IGrainIdentity identity, IGrainRuntime runtime)
+            => new NonReentrentStressGrainWithoutState(identity, runtime);
 
         public override Task OnActivateAsync()
         {
@@ -831,7 +875,7 @@ namespace UnitTests.Grains
             if (level > 0)
             {
                 Log("SetOne {0}-{1}_1. Before await Task.Done.", iter, level);
-                await TaskDone.Done;
+                await Task.CompletedTask;
                 Log("SetOne {0}-{1}_2. After await Task.Done.", iter, level);
                 CheckRuntimeEnvironment(String.Format("SetOne {0}-{1}_3", iter, level));
                 Log("SetOne {0}-{1}_4. Before await Task.Delay.", iter, level);
@@ -912,9 +956,11 @@ namespace UnitTests.Grains
                     "Found out that grain {0} is already in the middle of execution."
                     + "\n Single threaded-ness violation!"
                     + "\n {1} \n Call Stack={2}",
-                    _id, CaptureRuntimeEnvironment(), callStack);
-                logger.Error(1, "\n\n\n\n" + errorMsg + "\n\n\n\n");
-                OrleansTaskScheduler.Instance.DumpSchedulerStatus();
+                    this._id,
+                    TestRuntimeEnvironmentUtility.CaptureRuntimeEnvironment(),
+                    callStack);
+                this.logger.Error(1, "\n\n\n\n" + errorMsg + "\n\n\n\n");
+                this.scheduler.DumpSchedulerStatus();
                 LogManager.Flush();
                 //Environment.Exit(1);
                 throw new Exception(errorMsg);
@@ -956,7 +1002,7 @@ namespace UnitTests.Grains
         {
             logger.Info("SetOne");
             State.One = val;
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
     }
 
@@ -1010,9 +1056,11 @@ namespace UnitTests.Grains
         private readonly int _instanceFilterValue2 = _staticFilterValue2;
 
         private Logger logger;
+        private SerializationManager serializationManager;
 
         public override Task OnActivateAsync()
         {
+            this.serializationManager = this.ServiceProvider.GetRequiredService<SerializationManager>();
             logger = GetLogger("SerializationTestGrain-" + IdentityString);
             return base.OnActivateAsync();
         }
@@ -1036,7 +1084,7 @@ namespace UnitTests.Grains
             //TestSerializeFuncPtr("Instance Func In Grain Class", instanceFuncInGrainClass);
             //TestSerializeFuncPtr("Func Lambda - Instance field", instanceFilterFunc);
 
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task Test_Serialize_Predicate()
@@ -1053,7 +1101,7 @@ namespace UnitTests.Grains
             // Fails
             //TestSerializePredicate("Predicate Lambda - Instance field", instancePredicate);
 
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task Test_Serialize_Predicate_Class()
@@ -1063,7 +1111,7 @@ namespace UnitTests.Grains
             // Works OK
             TestSerializePredicate("Predicate Class Instance", pred.FilterFunc);
 
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         public Task Test_Serialize_Predicate_Class_Param(IMyPredicate pred)
@@ -1071,14 +1119,14 @@ namespace UnitTests.Grains
             // Works OK
             TestSerializePredicate("Predicate Class Instance passed as param", pred.FilterFunc);
 
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
         // Utility methods
 
         private void TestSerializeFuncPtr(string what, Func<int, bool> func1)
         {
-            object obj2 = SerializationManager.RoundTripSerializationForTesting(func1);
+            object obj2 = this.serializationManager.RoundTripSerializationForTesting(func1);
             var func2 = (Func<int, bool>) obj2;
 
             foreach (
@@ -1091,7 +1139,7 @@ namespace UnitTests.Grains
 
         private void TestSerializePredicate(string what, Predicate<int> pred1)
         {
-            object obj2 = SerializationManager.RoundTripSerializationForTesting(pred1);
+            object obj2 = this.serializationManager.RoundTripSerializationForTesting(pred1);
             var pred2 = (Predicate<int>) obj2;
 
             foreach (

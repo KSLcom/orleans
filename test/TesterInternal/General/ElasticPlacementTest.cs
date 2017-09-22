@@ -1,58 +1,39 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text;
 using System.Threading.Tasks;
-using Orleans;
 using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
 using Orleans.TestingHost;
-using Tester;
+using TestExtensions;
 using UnitTests.GrainInterfaces;
 using Xunit;
 
 namespace UnitTests.General
 {
-    public class ElasticPlacementTests : HostedTestClusterPerTest
+    [TestCategory("Elasticity"), TestCategory("Placement")]
+    public class ElasticPlacementTests : TestClusterPerTest
     {
         private readonly List<IActivationCountBasedPlacementTestGrain> grains = new List<IActivationCountBasedPlacementTestGrain>();
         private const int leavy = 300;
         private const int perSilo = 1000;
 
-        private static readonly TestingSiloOptions siloOptions = new TestingSiloOptions
+        public override TestCluster CreateTestCluster()
         {
-            StartFreshOrleans = true,
-            StartPrimary = true,
-            StartSecondary = true,
-            DataConnectionString = TestDefaultConfiguration.DataConnectionString,
-            LivenessType = GlobalConfiguration.LivenessProviderType.AzureTable,
-            ReminderServiceType = GlobalConfiguration.ReminderServiceProviderType.ReminderTableGrain,
-            SiloConfigFile = new FileInfo("OrleansConfigurationForTesting.xml")
-        };
+            var options = new TestClusterOptions();
 
-        private static readonly TestingClientOptions clientOptions = new TestingClientOptions
-        {
-            ClientConfigFile = new FileInfo("ClientConfigurationForTesting.xml"),
-            AdjustConfig = config =>
-            {
-                config.GatewayProvider = ClientConfiguration.GatewayProviderType.AzureTable;
-                config.DataConnectionString = TestDefaultConfiguration.DataConnectionString;
-            },
-        };
-
-        public override TestingSiloHost CreateSiloHost()
-        {
-            TestUtils.CheckForAzureStorage();
-            return new TestingSiloHost(siloOptions, clientOptions);
+            options.ClusterConfiguration.AddMemoryStorageProvider("MemoryStore");
+            options.ClusterConfiguration.AddMemoryStorageProvider("Default");
+            return new TestCluster(options);
         }
 
         /// <summary>
         /// Test placement behaviour for newly added silos. The grain placement strategy should favor them
         /// until they reach a similar load as the other silos.
         /// </summary>
-        [Fact, TestCategory("Functional"), TestCategory("Elasticity"), TestCategory("Placement")]
+        [Fact, TestCategory("Functional")]
         public async Task ElasticityTest_CatchingUp()
         {
 
@@ -64,7 +45,7 @@ namespace UnitTests.General
             LogCounts(activationCounts);
             logger.Info("-----------------------------------------------------------------");
             AssertIsInRange(activationCounts[this.HostedCluster.Primary], perSilo, leavy);
-            AssertIsInRange(activationCounts[this.HostedCluster.Secondary], perSilo, leavy);
+            AssertIsInRange(activationCounts[this.HostedCluster.SecondarySilos.First()], perSilo, leavy);
 
             SiloHandle silo3 = this.HostedCluster.StartAdditionalSilo();
             await this.HostedCluster.WaitForLivenessToStabilizeAsync();
@@ -81,7 +62,7 @@ namespace UnitTests.General
             logger.Info("-----------------------------------------------------------------");
             double expected = (6.0 * perSilo) / 3.0;
             AssertIsInRange(activationCounts[this.HostedCluster.Primary], expected, leavy);
-            AssertIsInRange(activationCounts[this.HostedCluster.Secondary], expected, leavy);
+            AssertIsInRange(activationCounts[this.HostedCluster.SecondarySilos.First()], expected, leavy);
             AssertIsInRange(activationCounts[silo3], expected, leavy);
 
             logger.Info("\n\n\n----- Phase 3 -----\n\n");
@@ -95,7 +76,7 @@ namespace UnitTests.General
             logger.Info("-----------------------------------------------------------------");
             expected = (9.0 * perSilo) / 3.0;
             AssertIsInRange(activationCounts[this.HostedCluster.Primary], expected, leavy);
-            AssertIsInRange(activationCounts[this.HostedCluster.Secondary], expected, leavy);
+            AssertIsInRange(activationCounts[this.HostedCluster.SecondarySilos.First()], expected, leavy);
             AssertIsInRange(activationCounts[silo3], expected, leavy);
 
             logger.Info("-----------------------------------------------------------------");
@@ -106,7 +87,7 @@ namespace UnitTests.General
         /// This evaluates the how the placement strategy behaves once silos are stopped: The strategy should
         /// balance the activations from the stopped silo evenly among the remaining silos.
         /// </summary>
-        [Fact, TestCategory("Functional"), TestCategory("Elasticity"), TestCategory("Placement")]
+        [Fact, TestCategory("Functional")]
         public async Task ElasticityTest_StoppingSilos()
         {
             List<SiloHandle> runtimes = this.HostedCluster.StartAdditionalSilos(2);
@@ -123,7 +104,7 @@ namespace UnitTests.General
             LogCounts(activationCounts);
             logger.Info("-----------------------------------------------------------------");
             AssertIsInRange(activationCounts[this.HostedCluster.Primary], perSilo, stopLeavy);
-            AssertIsInRange(activationCounts[this.HostedCluster.Secondary], perSilo, stopLeavy);
+            AssertIsInRange(activationCounts[this.HostedCluster.SecondarySilos.First()], perSilo, stopLeavy);
             AssertIsInRange(activationCounts[runtimes[0]], perSilo, stopLeavy);
             AssertIsInRange(activationCounts[runtimes[1]], perSilo, stopLeavy);
 
@@ -137,7 +118,7 @@ namespace UnitTests.General
             logger.Info("-----------------------------------------------------------------");
             double expected = perSilo * 1.33;
             AssertIsInRange(activationCounts[this.HostedCluster.Primary], expected, stopLeavy);
-            AssertIsInRange(activationCounts[this.HostedCluster.Secondary], expected, stopLeavy);
+            AssertIsInRange(activationCounts[this.HostedCluster.SecondarySilos.First()], expected, stopLeavy);
             AssertIsInRange(activationCounts[runtimes[1]], expected, stopLeavy);
 
             logger.Info("-----------------------------------------------------------------");
@@ -147,11 +128,11 @@ namespace UnitTests.General
         /// <summary>
         /// Do not place activation in case all silos are above 110 CPU utilization.
         /// </summary>
-        [Fact, TestCategory("Functional"), TestCategory("Elasticity"), TestCategory("Placement")]
+        [Fact, TestCategory("Functional")]
         public async Task ElasticityTest_AllSilosCPUTooHigh()
         {
             var taintedGrainPrimary = await GetGrainAtSilo(this.HostedCluster.Primary.SiloAddress);
-            var taintedGrainSecondary = await GetGrainAtSilo(this.HostedCluster.Secondary.SiloAddress);
+            var taintedGrainSecondary = await GetGrainAtSilo(this.HostedCluster.SecondarySilos.First().SiloAddress);
 
             await taintedGrainPrimary.LatchCpuUsage(110.0f);
             await taintedGrainSecondary.LatchCpuUsage(110.0f);
@@ -163,11 +144,11 @@ namespace UnitTests.General
         /// <summary>
         /// Do not place activation in case all silos are above 110 CPU utilization or have overloaded flag set.
         /// </summary>
-        [Fact, TestCategory("Functional"), TestCategory("Elasticity"), TestCategory("Placement")]
+        [Fact, TestCategory("Functional")]
         public async Task ElasticityTest_AllSilosOverloaded()
         {
             var taintedGrainPrimary = await GetGrainAtSilo(this.HostedCluster.Primary.SiloAddress);
-            var taintedGrainSecondary = await GetGrainAtSilo(this.HostedCluster.Secondary.SiloAddress);
+            var taintedGrainSecondary = await GetGrainAtSilo(this.HostedCluster.SecondarySilos.First().SiloAddress);
 
             await taintedGrainPrimary.LatchCpuUsage(110.0f);
             await taintedGrainSecondary.LatchOverloaded();
@@ -180,7 +161,7 @@ namespace UnitTests.General
         }
 
 
-        [Fact, TestCategory("Functional"), TestCategory("Elasticity"), TestCategory("Placement")]
+        [Fact, TestCategory("Functional")]
         public async Task LoadAwareGrainShouldNotAttemptToCreateActivationsOnOverloadedSilo()
         {
             await ElasticityGrainPlacementTest(
@@ -192,7 +173,7 @@ namespace UnitTests.General
                 "A grain instantiated with the load-aware placement strategy should not attempt to create activations on an overloaded silo.");
         }
 
-        [Fact, TestCategory("Functional"), TestCategory("Elasticity"), TestCategory("Placement")]
+        [Fact, TestCategory("Functional")]
         public async Task LoadAwareGrainShouldNotAttemptToCreateActivationsOnBusySilos()
         {
             // a CPU usage of 110% will disqualify a silo from getting new grains.
@@ -211,7 +192,7 @@ namespace UnitTests.General
         {
             while (true)
             {
-                IPlacementTestGrain grain = GrainClient.GrainFactory.GetGrain<IRandomPlacementTestGrain>(Guid.NewGuid());
+                IPlacementTestGrain grain = this.GrainFactory.GetGrain<IRandomPlacementTestGrain>(Guid.NewGuid());
                 SiloAddress address = await grain.GetLocation();
                 if (address.Equals(silo))
                     return grain;
@@ -235,7 +216,6 @@ namespace UnitTests.General
             await this.HostedCluster.WaitForLivenessToStabilizeAsync();
             logger.Info("********************** Starting the test {0} ******************************", name);
             var taintedSilo = this.HostedCluster.StartAdditionalSilo();
-            TestSilosStarted(3);
 
             const long sampleSize = 10;
 
@@ -245,7 +225,7 @@ namespace UnitTests.General
                 Enumerable.Range(0, (int)sampleSize).
                 Select(
                     n =>
-                        GrainClient.GrainFactory.GetGrain<IActivationCountBasedPlacementTestGrain>(Guid.NewGuid()));
+                        this.GrainFactory.GetGrain<IActivationCountBasedPlacementTestGrain>(Guid.NewGuid()));
 
             // make the grain's silo undesirable for new grains.
             taint(taintedGrain).Wait();
@@ -277,8 +257,8 @@ namespace UnitTests.General
             var promises = new List<Task>();
             for (var i = 0; i < amount; i++)
             {
-                IActivationCountBasedPlacementTestGrain grain = GrainClient.GrainFactory.GetGrain<IActivationCountBasedPlacementTestGrain>(Guid.NewGuid());
-                grains.Add(grain);
+                IActivationCountBasedPlacementTestGrain grain = this.GrainFactory.GetGrain<IActivationCountBasedPlacementTestGrain>(Guid.NewGuid());
+                this.grains.Add(grain);
                 // Make sure we activate grain:
                 promises.Add(grain.Nop());
             }
@@ -299,7 +279,7 @@ namespace UnitTests.General
         {
             string fullTypeName = "UnitTests.Grains.ActivationCountBasedPlacementTestGrain";
 
-            IManagementGrain mgmtGrain = GrainClient.GrainFactory.GetGrain<IManagementGrain>(0);
+            IManagementGrain mgmtGrain = this.GrainFactory.GetGrain<IManagementGrain>(0);
             SimpleGrainStatistic[] stats = await mgmtGrain.GetSimpleGrainStatistics();
 
             return this.HostedCluster.GetActiveSilos()

@@ -1,11 +1,8 @@
-using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using Orleans.Providers;
 using Orleans.Runtime.Configuration;
-using Orleans.Runtime.Providers;
 using Orleans.Streams;
 
 namespace Orleans.Runtime
@@ -16,18 +13,18 @@ namespace Orleans.Runtime
     internal class StreamProviderManagerAgent : SystemTarget, IStreamProviderManagerAgent
     {
         private readonly StreamProviderManager streamProviderManager;
-        private readonly List<IProvider> allSiloProviders;
+        private readonly IStreamProviderRuntime streamProviderRuntime;
         private readonly IDictionary<string, ProviderCategoryConfiguration> providerConfigurations;
         private readonly Logger logger;
         private readonly AsyncSerialExecutor nonReentrancyGuarantor;
 
-        public StreamProviderManagerAgent(Silo silo, List<IProvider> allSiloProviders)
+        public StreamProviderManagerAgent(Silo silo, IStreamProviderRuntime streamProviderRuntime)
             : base(Constants.StreamProviderManagerAgentSystemTargetId, silo.SiloAddress)
         {
             logger = LogManager.GetLogger("StreamProviderUpdateAgent", LoggerType.Runtime);
             this.streamProviderManager = (StreamProviderManager)silo.StreamProviderManager;
             providerConfigurations = silo.GlobalConfig.ProviderConfigurations;
-            this.allSiloProviders = allSiloProviders;
+            this.streamProviderRuntime = streamProviderRuntime;
             nonReentrancyGuarantor = new AsyncSerialExecutor();
         }
 
@@ -77,7 +74,7 @@ namespace Orleans.Runtime
                 await siloStreamProviderManager.RemoveProviders(removeList);
 
                 // Adding new providers to silo
-                await siloStreamProviderManager.LoadStreamProviders(streamProviderConfigurations, SiloProviderRuntime.Instance);
+                await siloStreamProviderManager.LoadStreamProviders(streamProviderConfigurations, this.streamProviderRuntime);
 
                 // Starting new providers
                 await siloStreamProviderManager.StartStreamProviders(addList);
@@ -92,12 +89,6 @@ namespace Orleans.Runtime
                 logger.Error(ErrorCode.Provider_ErrorFromInit, exc.Message, exc);
                 throw;
             }
-
-            IList<IProvider> providerList = siloStreamProviderManager.GetProviders();
-
-            // update allSiloProviders
-            allSiloProviders.Clear();
-            allSiloProviders.AddRange(providerList);
 
             if (logger.IsVerbose) { logger.Verbose("Stream providers updated successfully."); }
             providerConfigurations[ProviderCategoryConfiguration.STREAM_PROVIDER_CATEGORY_NAME] = 

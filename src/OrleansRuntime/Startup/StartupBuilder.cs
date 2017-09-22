@@ -2,8 +2,6 @@
 using System.Linq;
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
-using Orleans.Runtime.MembershipService;
-using Orleans.Runtime.ReminderService;
 
 namespace Orleans.Runtime.Startup
 {
@@ -12,14 +10,13 @@ namespace Orleans.Runtime.Startup
     /// </summary>
     internal class StartupBuilder
     {
-        internal static IServiceProvider ConfigureStartup(string startupTypeName, out bool usingCustomServiceProvider)
+        internal static IServiceProvider ConfigureStartup(string startupTypeName, IServiceCollection serviceCollection)
         {
-            usingCustomServiceProvider = false;
-            IServiceCollection serviceCollection = new ServiceCollection();
+            var usingCustomServiceProvider = false;
             ConfigureServicesBuilder servicesMethod = null;
             Type startupType = null;
 
-            if (!String.IsNullOrWhiteSpace(startupTypeName))
+            if (!string.IsNullOrWhiteSpace(startupTypeName))
             {
                 startupType = Type.GetType(startupTypeName);
                 if (startupType == null)
@@ -33,28 +30,17 @@ namespace Orleans.Runtime.Startup
                     usingCustomServiceProvider = true;
                 }
             }
-
-            RegisterSystemTypes(serviceCollection);
-
+            
             if (usingCustomServiceProvider)
             {
                 var instance = Activator.CreateInstance(startupType);
                 return servicesMethod.Build(instance, serviceCollection);
             }
 
-            return serviceCollection.BuildServiceProvider();
+            return serviceCollection.BuildServiceProvider(validateScopes: true);
         }
 
-        private static void RegisterSystemTypes(IServiceCollection serviceCollection)
-        {
-            // add system types
-            // Note: you can replace IGrainFactory with your own implementation, but 
-            // we don't recommend it, in the aspect of performance and usability
-            serviceCollection.AddSingleton<GrainFactory>((_sp) => new GrainFactory());
-            serviceCollection.AddSingleton<IGrainFactory>((sp) => sp.GetService<GrainFactory>());
-        }
-
-        private static ConfigureServicesBuilder FindConfigureServicesDelegate(Type startupType)
+        internal static ConfigureServicesBuilder FindConfigureServicesDelegate(Type startupType)
         {
             var servicesMethod = FindMethod(startupType, "ConfigureServices", typeof(IServiceProvider), false);
 

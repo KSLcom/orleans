@@ -22,12 +22,11 @@ namespace Orleans.Runtime
         public OrleansException(string message) : base(message) { }
 
         public OrleansException(string message, Exception innerException) : base(message, innerException) { }
-#if !NETSTANDARD
+
         protected OrleansException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         {
         }
-#endif
     }
 
     /// <summary>
@@ -48,12 +47,10 @@ namespace Orleans.Runtime
 
         public GatewayTooBusyException(string message, Exception innerException) : base(message, innerException) { }
 
-#if !NETSTANDARD
         protected GatewayTooBusyException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         {
         }
-#endif
     }
 
     /// <summary>
@@ -78,12 +75,10 @@ namespace Orleans.Runtime
         public LimitExceededException(string limitName, int current, int threshold, object extraInfo) 
             : base(string.Format("Limit exceeded {0} Current={1} Threshold={2} {3}", limitName, current, threshold, extraInfo)) { }
 
-#if !NETSTANDARD
         protected LimitExceededException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         {
         }
-#endif
     }
 
     /// <summary>
@@ -118,7 +113,6 @@ namespace Orleans.Runtime
             CallChain = callChain.Select(req => new Tuple<GrainId, string>(req.GrainId, req.DebugContext)).ToList();
         }
 
-#if !NETSTANDARD
         protected DeadlockException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         {
@@ -137,7 +131,6 @@ namespace Orleans.Runtime
 
             base.GetObjectData(info, context);
         }
-#endif
     }
 
     /// <summary>
@@ -150,28 +143,24 @@ namespace Orleans.Runtime
         public GrainExtensionNotInstalledException(string msg) : base(msg) { }
         public GrainExtensionNotInstalledException(string message, Exception innerException) : base(message, innerException) { }
 
-#if !NETSTANDARD
         protected GrainExtensionNotInstalledException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         { }
-#endif
     }
 
     /// <summary>
     /// Signifies that an request was cancelled due to target silo unavailability.
     /// </summary>
     [Serializable]
-    public class SiloUnavailableException : OrleansException
+    public class SiloUnavailableException : OrleansMessageRejectionException
     {
         public SiloUnavailableException() : base("SiloUnavailableException") { }
         public SiloUnavailableException(string msg) : base(msg) { }
         public SiloUnavailableException(string message, Exception innerException) : base(message, innerException) { }
 
-#if !NETSTANDARD
         protected SiloUnavailableException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         { }
-#endif
     }
 
     /// <summary>
@@ -184,11 +173,9 @@ namespace Orleans.Runtime
         public InvalidSchedulingContextException(string msg) : base(msg) { }
         public InvalidSchedulingContextException(string message, Exception innerException) : base(message, innerException) { }
 
-#if !NETSTANDARD
         protected InvalidSchedulingContextException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         { }
-#endif
     }
 
     /// <summary>
@@ -201,11 +188,73 @@ namespace Orleans.Runtime
         internal ClientNotAvailableException(string msg) : base(msg) { }
         internal ClientNotAvailableException(string message, Exception innerException) : base(message, innerException) { }
 
-#if !NETSTANDARD
         protected ClientNotAvailableException(SerializationInfo info, StreamingContext context)
             : base(info, context)
         { }
-#endif
+    }
+
+    /// <summary>
+    /// Indicates that a <see cref="GrainReference"/> was not bound to the runtime before being used.
+    /// </summary>
+    [Serializable]
+    public class GrainReferenceNotBoundException : OrleansException
+    {
+        internal GrainReferenceNotBoundException(GrainReference grainReference) : base(CreateMessage(grainReference)) { }
+
+        private static string CreateMessage(GrainReference grainReference)
+        {
+            return $"Attempted to use a GrainReference which has not been bound to the runtime: {grainReference.ToDetailedString()}." +
+                   $" Use the {nameof(IGrainFactory)}.{nameof(IGrainFactory.BindGrainReference)} method to bind this reference to the runtime.";
+        }
+
+        internal GrainReferenceNotBoundException(string msg) : base(msg) { }
+        internal GrainReferenceNotBoundException(string message, Exception innerException) : base(message, innerException) { }
+
+        protected GrainReferenceNotBoundException(SerializationInfo info, StreamingContext context)
+            : base(info, context)
+        { }
+    }
+
+    /// <summary>
+    /// Indicates that an Orleans message was rejected.
+    /// </summary>
+    [Serializable]
+    public class OrleansMessageRejectionException : OrleansException
+    {
+        internal OrleansMessageRejectionException(string message)
+            : base(message)
+        {
+        }
+
+        internal OrleansMessageRejectionException(string message,
+            Exception innerException) : base(message, innerException)
+        {
+        }
+
+        protected OrleansMessageRejectionException(SerializationInfo info, StreamingContext context)
+            : base(info, context)
+        { }
+    }
+
+    /// <summary>
+    /// Indicates a lifecycle was canceled, either by request or due to observer error.
+    /// </summary>
+    [Serializable]
+    public class OrleansLifecycleCanceledException : OrleansException
+    {
+        internal OrleansLifecycleCanceledException(string message)
+            : base(message)
+        {
+        }
+
+        internal OrleansLifecycleCanceledException(string message,
+            Exception innerException) : base(message, innerException)
+        {
+        }
+
+        protected OrleansLifecycleCanceledException(SerializationInfo info, StreamingContext context)
+            : base(info, context)
+        { }
     }
 }
 

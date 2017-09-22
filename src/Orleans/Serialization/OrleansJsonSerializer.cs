@@ -1,31 +1,36 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Net;
+using System.Reflection;
+using System.Runtime.Serialization;
 using System.Runtime.Serialization.Formatters;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Orleans.CodeGeneration;
 using Orleans.Runtime;
 
 namespace Orleans.Serialization
 {
     using Orleans.Providers;
-
+    
     public class OrleansJsonSerializer : IExternalSerializer
     {
         public const string UseFullAssemblyNamesProperty = "UseFullAssemblyNames";
         public const string IndentJsonProperty = "IndentJSON";
-        private static JsonSerializerSettings defaultSettings;
+        public const string TypeNameHandlingProperty = "TypeNameHandling";
+        private readonly JsonSerializerSettings settings;
         private Logger logger;
 
-        static OrleansJsonSerializer()
+        public OrleansJsonSerializer(SerializationManager serializationManager, IGrainFactory grainFactory)
         {
-            defaultSettings = GetDefaultSerializerSettings();
+            this.settings = GetDefaultSerializerSettings(serializationManager, grainFactory);
         }
 
         /// <summary>
         /// Returns the default serializer settings.
         /// </summary>
         /// <returns>The default serializer settings.</returns>
-        public static JsonSerializerSettings GetDefaultSerializerSettings()
+        public static JsonSerializerSettings GetDefaultSerializerSettings(SerializationManager serializationManager, IGrainFactory grainFactory)
         {
             var settings = new JsonSerializerSettings
             {
@@ -36,7 +41,10 @@ namespace Orleans.Serialization
                 MissingMemberHandling = MissingMemberHandling.Ignore,
                 NullValueHandling = NullValueHandling.Ignore,
                 ConstructorHandling = ConstructorHandling.AllowNonPublicDefaultConstructor,
-                TypeNameAssemblyFormat = FormatterAssemblyStyle.Simple,
+                TypeNameAssemblyFormatHandling = TypeNameAssemblyFormatHandling.Simple,
+
+                // Types such as GrainReference need context during deserialization, so provide that context now.
+                Context = new StreamingContext(StreamingContextStates.All, new SerializationContext(serializationManager)),
                 Formatting = Formatting.None
             };
 
@@ -45,6 +53,7 @@ namespace Orleans.Serialization
             settings.Converters.Add(new GrainIdConverter());
             settings.Converters.Add(new SiloAddressConverter());
             settings.Converters.Add(new UniqueKeyConverter());
+            settings.Converters.Add(new GrainReferenceConverter(grainFactory));
 
             return settings;
         }
@@ -63,7 +72,7 @@ namespace Orleans.Serialization
                 bool useFullAssemblyNames;
                 if (bool.TryParse(config.Properties[UseFullAssemblyNamesProperty], out useFullAssemblyNames) && useFullAssemblyNames)
                 {
-                    settings.TypeNameAssemblyFormat = FormatterAssemblyStyle.Full;
+                    settings.TypeNameAssemblyFormatHandling = TypeNameAssemblyFormatHandling.Full;
                 }
             }
 
@@ -75,90 +84,95 @@ namespace Orleans.Serialization
                     settings.Formatting = Formatting.Indented;
                 }
             }
+
+            if (config.Properties.ContainsKey(TypeNameHandlingProperty))
+            {
+                TypeNameHandling typeNameHandling;
+                if (Enum.TryParse<TypeNameHandling>(config.Properties[TypeNameHandlingProperty], out typeNameHandling))
+                {
+                    settings.TypeNameHandling = typeNameHandling;
+                }
+            }
             return settings;
         }
 
-        /// <summary>
-        /// Initializes the serializer
-        /// </summary>
-        /// <param name="logger">The logger to use to capture any serialization events</param>
+        /// <inheritdoc />
         public void Initialize(Logger logger)
         {
             this.logger = logger;
         }
 
-        /// <summary>
-        /// Informs the serialization manager whether this serializer supports the type for serialization.
-        /// </summary>
-        /// <param name="itemType">The type of the item to be serialized</param>
-        /// <returns>A value indicating whether the item can be serialized.</returns>
+        /// <inheritdoc />
         public bool IsSupportedType(Type itemType)
         {
             return true;
         }
 
-        /// <summary>
-        /// Creates a deep copy of an object
-        /// </summary>
-        /// <param name="source">The source object to be copy</param>
-        /// <returns>The copy that was created</returns>
-        public object DeepCopy(object source)
+        /// <inheritdoc />
+        public object DeepCopy(object source, ICopyContext context)
         {
             if (source == null)
             {
                 return null;
             }
 
-            var writer = new BinaryTokenStreamWriter();
-            Serialize(source, writer, source.GetType());
-            var retVal = Deserialize(source.GetType(), new BinaryTokenStreamReader(writer.ToByteArray()));
+            var serializationContext = new SerializationContext(context.SerializationManager)
+            {
+                StreamWriter = new BinaryTokenStreamWriter()
+            };
+            
+            Serialize(source, serializationContext, source.GetType());
+            var deserializationContext = new DeserializationContext(context.SerializationManager)
+            {
+                StreamReader = new BinaryTokenStreamReader(serializationContext.StreamWriter.ToBytes())
+            };
+
+            var retVal = Deserialize(source.GetType(), deserializationContext);
+            serializationContext.StreamWriter.ReleaseBuffers();
             return retVal;
         }
 
-        /// <summary>
-        /// Deserializes an object from a binary stream
-        /// </summary>
-        /// <param name="expectedType">The type that is expected to be deserialized</param>
-        /// <param name="reader">The <see cref="BinaryTokenStreamReader"/></param>
-        /// <returns>The deserialized object</returns>
-        public object Deserialize(Type expectedType, BinaryTokenStreamReader reader)
+        /// <inheritdoc />
+        public object Deserialize(Type expectedType, IDeserializationContext context)
         {
-            if (reader == null)
+            if (context == null)
             {
-                throw new ArgumentNullException("reader");
+                throw new ArgumentNullException(nameof(context));
             }
 
+            var reader = context.StreamReader;
             var str = reader.ReadString();
-            return JsonConvert.DeserializeObject(str, expectedType, defaultSettings);
+            return JsonConvert.DeserializeObject(str, expectedType, this.settings);
         }
 
         /// <summary>
         /// Serializes an object to a binary stream
         /// </summary>
         /// <param name="item">The object to serialize</param>
-        /// <param name="writer">The <see cref="BinaryTokenStreamWriter"/></param>
+        /// <param name="context">The serialization context.</param>
         /// <param name="expectedType">The type the deserializer should expect</param>
-        public void Serialize(object item, BinaryTokenStreamWriter writer, Type expectedType)
+        public void Serialize(object item, ISerializationContext context, Type expectedType)
         {
-            if (writer == null)
+            if (context == null)
             {
-                throw new ArgumentNullException("writer");
+                throw new ArgumentNullException(nameof(context));
             }
 
+            var writer = context.StreamWriter;
             if (item == null)
             {
                 writer.WriteNull();
                 return;
             }
 
-            var str = JsonConvert.SerializeObject(item, expectedType, defaultSettings);
+            var str = JsonConvert.SerializeObject(item, expectedType, this.settings);
             writer.Write(str);
         }
     }
 
-    #region JsonConverters
+#region JsonConverters
 
-    internal class IPAddressConverter : JsonConverter
+    public class IPAddressConverter : JsonConverter
     {
         public override bool CanConvert(Type objectType)
         {
@@ -178,7 +192,7 @@ namespace Orleans.Serialization
         }
     }
 
-    internal class GrainIdConverter : JsonConverter
+    public class GrainIdConverter : JsonConverter
     {
         public override bool CanConvert(Type objectType)
         {
@@ -202,7 +216,7 @@ namespace Orleans.Serialization
         }
     }
 
-    internal class SiloAddressConverter : JsonConverter
+    public class SiloAddressConverter : JsonConverter
     {
         public override bool CanConvert(Type objectType)
         {
@@ -226,7 +240,7 @@ namespace Orleans.Serialization
         }
     }
 
-    internal class UniqueKeyConverter : JsonConverter
+    public class UniqueKeyConverter : JsonConverter
     {
         public override bool CanConvert(Type objectType)
         {
@@ -250,7 +264,7 @@ namespace Orleans.Serialization
         }
     }
 
-    internal class IPEndPointConverter : JsonConverter
+    public class IPEndPointConverter : JsonConverter
     {
         public override bool CanConvert(Type objectType)
         {
@@ -276,5 +290,64 @@ namespace Orleans.Serialization
             return new IPEndPoint(address, port);
         }
     }
+
+    public class GrainReferenceConverter : JsonConverter
+    {
+        private static readonly Type AddressableType = typeof(IAddressable);
+        private readonly IGrainFactory grainFactory;
+        private readonly JsonSerializer internalSerializer;
+
+        public GrainReferenceConverter(IGrainFactory grainFactory)
+        {
+            this.grainFactory = grainFactory;
+
+            // Create a serializer for internal serialization which does not have a specified GrainReference serializer.
+            // This internal serializer will use GrainReference's ISerializable implementation for serialization and deserialization.
+            this.internalSerializer = JsonSerializer.Create(new JsonSerializerSettings
+            {
+                TypeNameHandling = TypeNameHandling.All,
+                PreserveReferencesHandling = PreserveReferencesHandling.None,
+                DateFormatHandling = DateFormatHandling.IsoDateFormat,
+                DefaultValueHandling = DefaultValueHandling.Ignore,
+                MissingMemberHandling = MissingMemberHandling.Ignore,
+                NullValueHandling = NullValueHandling.Ignore,
+                ConstructorHandling = ConstructorHandling.AllowNonPublicDefaultConstructor,
+                Formatting = Formatting.None,
+                Converters =
+                {
+                    new IPAddressConverter(),
+                    new IPEndPointConverter(),
+                    new GrainIdConverter(),
+                    new SiloAddressConverter(),
+                    new UniqueKeyConverter()
+                }
+            });
+        }
+
+        public override bool CanConvert(Type objectType)
+        {
+            return AddressableType.IsAssignableFrom(objectType);
+        }
+
+        public override void WriteJson(JsonWriter writer, object value, JsonSerializer serializer)
+        {
+            // Serialize the grain reference using the internal serializer.
+            this.internalSerializer.Serialize(writer, value);
+        }
+
+        public override object ReadJson(JsonReader reader, Type objectType, object existingValue, JsonSerializer serializer)
+        {
+            // Deserialize using the internal serializer which will use the concrete GrainReference implementation's
+            // ISerializable constructor.
+            var result = this.internalSerializer.Deserialize(reader, objectType);
+            var grainRef = result as IAddressable;
+            if (grainRef == null) return result;
+
+            // Bind the deserialized grain reference to the runtime.
+            this.grainFactory.BindGrainReference(grainRef);
+            return grainRef;
+        }
+    }
+
     #endregion
 }

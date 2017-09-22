@@ -1,16 +1,18 @@
-﻿
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using Microsoft.ServiceBus.Messaging;
+using Microsoft.Azure.EventHubs;
 using Orleans.Providers.Streams.Common;
+using Orleans.Serialization;
 using Orleans.Streams;
+using System.Collections.Concurrent;
+using Orleans.Runtime;
 
 namespace Orleans.ServiceBus.Providers
 {
     /// <summary>
-    /// This is a tightly packed cached structure containing an event hub message.  
+    /// This is a tightly packed cached structure containing an event hub message.
     /// It should only contain value types.
     /// </summary>
     public struct CachedEventHubMessage
@@ -44,10 +46,35 @@ namespace Orleans.ServiceBus.Providers
     public class EventHubMessage
     {
         /// <summary>
+        /// Contructor
+        /// </summary>
+        /// <param name="streamIdentity">Stream Identity</param>
+        /// <param name="partitionKey">EventHub partition key for message</param>
+        /// <param name="offset">Offset into the EventHub parition where this message was from</param>
+        /// <param name="sequenceNumber">Offset into the EventHub parition where this message was from</param>
+        /// <param name="enqueueTimeUtc">Time in UTC when this message was injected by EventHub</param>
+        /// <param name="dequeueTimeUtc">Time in UTC when this message was read from EventHub into the current service</param>
+        /// <param name="properties">User properties from EventData object</param>
+        /// <param name="payload">Binary data from EventData objbect</param>
+        public EventHubMessage(IStreamIdentity streamIdentity, string partitionKey, string offset, long sequenceNumber,
+            DateTime enqueueTimeUtc, DateTime dequeueTimeUtc, IDictionary<string, object> properties, byte[] payload)
+        {
+            StreamIdentity = streamIdentity;
+            PartitionKey = partitionKey;
+            Offset = offset;
+            SequenceNumber = sequenceNumber;
+            EnqueueTimeUtc = enqueueTimeUtc;
+            DequeueTimeUtc = dequeueTimeUtc;
+            Properties = properties;
+            Payload = payload;
+        }
+
+        /// <summary>
         /// Duplicate of EventHub's EventData class.
         /// </summary>
         /// <param name="cachedMessage"></param>
-        public EventHubMessage(CachedEventHubMessage cachedMessage)
+        /// <param name="serializationManager"></param>
+        public EventHubMessage(CachedEventHubMessage cachedMessage, SerializationManager serializationManager)
         {
             int readOffset = 0;
             StreamIdentity = new StreamIdentity(cachedMessage.StreamGuid, SegmentBuilder.ReadNextString(cachedMessage.Segment, ref readOffset));
@@ -56,7 +83,7 @@ namespace Orleans.ServiceBus.Providers
             SequenceNumber = cachedMessage.SequenceNumber;
             EnqueueTimeUtc = cachedMessage.EnqueueTimeUtc;
             DequeueTimeUtc = cachedMessage.DequeueTimeUtc;
-            Properties = SegmentBuilder.ReadNextBytes(cachedMessage.Segment, ref readOffset).DeserializeProperties();
+            Properties = SegmentBuilder.ReadNextBytes(cachedMessage.Segment, ref readOffset).DeserializeProperties(serializationManager);
             Payload = SegmentBuilder.ReadNextBytes(cachedMessage.Segment, ref readOffset).ToArray();
         }
 
@@ -97,18 +124,25 @@ namespace Orleans.ServiceBus.Providers
     /// <summary>
     /// Default eventhub data comparer.  Implements comparisions against CachedEventHubMessage
     /// </summary>
-    internal class EventHubDataComparer : ICacheDataComparer<CachedEventHubMessage>
+    public class EventHubDataComparer : ICacheDataComparer<CachedEventHubMessage>
     {
+        /// <summary>
+        /// Singleton instance, since type is stateless using this will reduce allocations.
+        /// </summary>
         public static readonly ICacheDataComparer<CachedEventHubMessage> Instance = new EventHubDataComparer();
 
-        public int Compare(CachedEventHubMessage cachedMessage, StreamSequenceToken token)
+        /// <summary>
+        /// Compare a cached message with a sequence token to determine if it message is before or after the token
+        /// </summary>
+        public int Compare(CachedEventHubMessage cachedMessage, StreamSequenceToken streamToken)
         {
-            var realToken = (EventSequenceToken)token;
-            return cachedMessage.SequenceNumber != realToken.SequenceNumber
-                ? (int)(cachedMessage.SequenceNumber - realToken.SequenceNumber)
-                : 0 - realToken.EventIndex;
+            var realToken = (EventSequenceToken)streamToken;
+            return (int)(cachedMessage.SequenceNumber - realToken.SequenceNumber);
         }
 
+        /// <summary>
+        /// Checks to see if the cached message is part of the provided stream
+        /// </summary>
         public bool Equals(CachedEventHubMessage cachedMessage, IStreamIdentity streamIdentity)
         {
             int result = cachedMessage.StreamGuid.CompareTo(streamIdentity.Guid);
@@ -125,28 +159,38 @@ namespace Orleans.ServiceBus.Providers
     /// </summary>
     public class EventHubDataAdapter : ICacheDataAdapter<EventData, CachedEventHubMessage>
     {
+        private readonly SerializationManager serializationManager;
         private readonly IObjectPool<FixedSizeBuffer> bufferPool;
-        private readonly TimePurgePredicate timePurage;
         private FixedSizeBuffer currentBuffer;
 
-        /// <summary>
-        /// Assignable purge action.  This is called when a purge request is triggered.
-        /// </summary>
-        public Action<IDisposable> PurgeAction { private get; set; }
+        /// <inheritdoc />
+        public Action<FixedSizeBuffer> OnBlockAllocated { set; private get; }
 
         /// <summary>
         /// Cache data adapter that adapts EventHub's EventData to CachedEventHubMessage used in cache
         /// </summary>
+        /// <param name="serializationManager"></param>
         /// <param name="bufferPool"></param>
-        /// <param name="timePurage"></param>
-        public EventHubDataAdapter(IObjectPool<FixedSizeBuffer> bufferPool, TimePurgePredicate timePurage = null)
+        public EventHubDataAdapter(SerializationManager serializationManager, IObjectPool<FixedSizeBuffer> bufferPool)
         {
             if (bufferPool == null)
             {
                 throw new ArgumentNullException(nameof(bufferPool));
             }
+            this.serializationManager = serializationManager;
             this.bufferPool = bufferPool;
-            this.timePurage = timePurage ?? TimePurgePredicate.Default;
+        }
+
+        /// <inheritdoc cref="ICacheDataAdapter{TQueueMessage,TCachedMessage}"/>
+        public DateTime? GetMessageEnqueueTimeUtc(ref CachedEventHubMessage message)
+        {
+            return message.EnqueueTimeUtc;
+        }
+
+        /// <inheritdoc cref="ICacheDataAdapter{TQueueMessage,TCachedMessage}"/>
+        public DateTime? GetMessageDequeueTimeUtc(ref CachedEventHubMessage message)
+        {
+            return message.DequeueTimeUtc;
         }
 
         /// <summary>
@@ -160,8 +204,8 @@ namespace Orleans.ServiceBus.Providers
         {
             StreamPosition streamPosition = GetStreamPosition(queueMessage);
             cachedMessage.StreamGuid = streamPosition.StreamIdentity.Guid;
-            cachedMessage.SequenceNumber = queueMessage.SequenceNumber;
-            cachedMessage.EnqueueTimeUtc = queueMessage.EnqueuedTimeUtc;
+            cachedMessage.SequenceNumber = queueMessage.SystemProperties.SequenceNumber;
+            cachedMessage.EnqueueTimeUtc = queueMessage.SystemProperties.EnqueuedTimeUtc;
             cachedMessage.DequeueTimeUtc = dequeueTimeUtc;
             cachedMessage.Segment = EncodeMessageIntoSegment(streamPosition, queueMessage);
             return streamPosition;
@@ -174,7 +218,7 @@ namespace Orleans.ServiceBus.Providers
         /// <returns></returns>
         public IBatchContainer GetBatchContainer(ref CachedEventHubMessage cachedMessage)
         {
-            var evenHubMessage = new EventHubMessage(cachedMessage);
+            var evenHubMessage = new EventHubMessage(cachedMessage, this.serializationManager);
             return GetBatchContainer(evenHubMessage);
         }
 
@@ -185,7 +229,7 @@ namespace Orleans.ServiceBus.Providers
         /// <returns></returns>
         protected virtual IBatchContainer GetBatchContainer(EventHubMessage eventHubMessage)
         {
-            return new EventHubBatchContainer(eventHubMessage);
+            return new EventHubBatchContainer(eventHubMessage, this.serializationManager);
         }
 
         /// <summary>
@@ -195,7 +239,7 @@ namespace Orleans.ServiceBus.Providers
         /// <returns></returns>
         public virtual StreamSequenceToken GetSequenceToken(ref CachedEventHubMessage cachedMessage)
         {
-            return new EventSequenceToken(cachedMessage.SequenceNumber, 0);
+            return new EventHubSequenceTokenV2("", cachedMessage.SequenceNumber, 0);
         }
 
         /// <summary>
@@ -205,41 +249,13 @@ namespace Orleans.ServiceBus.Providers
         /// <returns></returns>
         public virtual StreamPosition GetStreamPosition(EventData queueMessage)
         {
-            Guid streamGuid = Guid.Parse(queueMessage.PartitionKey);
+            Guid streamGuid =
+            Guid.Parse(queueMessage.SystemProperties.PartitionKey);
             string streamNamespace = queueMessage.GetStreamNamespaceProperty();
             IStreamIdentity stremIdentity = new StreamIdentity(streamGuid, streamNamespace);
-            StreamSequenceToken token = new EventSequenceToken(queueMessage.SequenceNumber, 0);
+            StreamSequenceToken token =
+                new EventHubSequenceTokenV2(queueMessage.SystemProperties.Offset, queueMessage.SystemProperties.SequenceNumber, 0);
             return new StreamPosition(stremIdentity, token);
-        }
-
-        /// <summary>
-        /// Given a purge request, indicates if a cached message should be purged from the cache
-        /// </summary>
-        /// <param name="cachedMessage"></param>
-        /// <param name="newestCachedMessage"></param>
-        /// <param name="purgeRequest"></param>
-        /// <param name="nowUtc"></param>
-        /// <returns></returns>
-        public bool ShouldPurge(ref CachedEventHubMessage cachedMessage, ref CachedEventHubMessage newestCachedMessage, IDisposable purgeRequest, DateTime nowUtc)
-        {
-            // if we're purging our current buffer, don't use it any more
-            var purgedResource = (FixedSizeBuffer)purgeRequest;
-            if (currentBuffer != null && currentBuffer.Id == purgedResource.Id)
-            {
-                currentBuffer = null;
-            }
-
-            TimeSpan timeInCache = nowUtc - cachedMessage.DequeueTimeUtc;
-            // age of message relative to the most recent event in the cache.
-            TimeSpan relativeAge = newestCachedMessage.EnqueueTimeUtc - cachedMessage.EnqueueTimeUtc;
-
-            return ShouldPurgeFromResource(ref cachedMessage, purgedResource) || timePurage.ShouldPurgFromTime(timeInCache, relativeAge);
-        }
-
-        private static bool ShouldPurgeFromResource(ref CachedEventHubMessage cachedMessage, FixedSizeBuffer purgedResource)
-        {
-            // if message is from this resource, purge
-            return cachedMessage.Segment.Array == purgedResource.Id;
         }
 
         private ArraySegment<byte> GetSegment(int size)
@@ -250,7 +266,10 @@ namespace Orleans.ServiceBus.Providers
             {
                 // no block or block full, get new block and try again
                 currentBuffer = bufferPool.Allocate();
-                currentBuffer.SetPurgeAction(PurgeAction);
+                if (this.OnBlockAllocated == null)
+                    throw new OrleansException("Eviction strategy's OnBlockAllocated is not set for current data adapter, this will affect cache purging");
+                //call EvictionStrategy's OnBlockAllocated method
+                this.OnBlockAllocated.Invoke(currentBuffer);
                 // if this fails with clean block, then requested size is too big
                 if (!currentBuffer.TryGetSegment(size, out segment))
                 {
@@ -265,12 +284,12 @@ namespace Orleans.ServiceBus.Providers
         // Placed object message payload into a segment.
         private ArraySegment<byte> EncodeMessageIntoSegment(StreamPosition streamPosition, EventData queueMessage)
         {
-            byte[] propertiesBytes = queueMessage.SerializeProperties();
-            byte[] payload = queueMessage.GetBytes();
+            byte[] propertiesBytes = queueMessage.SerializeProperties(this.serializationManager);
+            byte[] payload = queueMessage.Body.Array;
             // get size of namespace, offset, partitionkey, properties, and payload
             int size = SegmentBuilder.CalculateAppendSize(streamPosition.StreamIdentity.Namespace) +
-            SegmentBuilder.CalculateAppendSize(queueMessage.Offset) +
-            SegmentBuilder.CalculateAppendSize(queueMessage.PartitionKey) +
+            SegmentBuilder.CalculateAppendSize(queueMessage.SystemProperties.Offset) +
+            SegmentBuilder.CalculateAppendSize(queueMessage.SystemProperties.PartitionKey) +
             SegmentBuilder.CalculateAppendSize(propertiesBytes) +
             SegmentBuilder.CalculateAppendSize(payload);
 
@@ -280,8 +299,8 @@ namespace Orleans.ServiceBus.Providers
             // encode namespace, offset, partitionkey, properties and payload into segment
             int writeOffset = 0;
             SegmentBuilder.Append(segment, ref writeOffset, streamPosition.StreamIdentity.Namespace);
-            SegmentBuilder.Append(segment, ref writeOffset, queueMessage.Offset);
-            SegmentBuilder.Append(segment, ref writeOffset, queueMessage.PartitionKey);
+            SegmentBuilder.Append(segment, ref writeOffset, queueMessage.SystemProperties.Offset);
+            SegmentBuilder.Append(segment, ref writeOffset, queueMessage.SystemProperties.PartitionKey);
             SegmentBuilder.Append(segment, ref writeOffset, propertiesBytes);
             SegmentBuilder.Append(segment, ref writeOffset, payload);
 

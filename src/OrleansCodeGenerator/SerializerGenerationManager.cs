@@ -15,6 +15,8 @@ namespace Orleans.CodeGenerator
     /// </summary>
     internal class SerializerGenerationManager
     {
+        private readonly SerializationManager serializationManager;
+
         /// <summary>
         /// The logger.
         /// </summary>
@@ -33,8 +35,9 @@ namespace Orleans.CodeGenerator
         /// <summary>
         /// Initializes members of the <see cref="SerializerGenerationManager"/> class.
         /// </summary>
-        internal SerializerGenerationManager()
+        internal SerializerGenerationManager(SerializationManager serializationManager)
         {
+            this.serializationManager = serializationManager;
             typesToProcess = new HashSet<Type>();
             processedTypes = new HashSet<Type>();
 
@@ -48,7 +51,7 @@ namespace Orleans.CodeGenerator
 
         internal bool RecordTypeToGenerate(Type t, Module module, Assembly targetAssembly)
         {
-            if (TypeUtilities.IsTypeIsInaccessibleForSerialization(t, module, targetAssembly))
+            if (!TypeUtilities.IsAccessibleFromAssembly(t, targetAssembly))
             {
                 return false;
             }
@@ -72,11 +75,12 @@ namespace Orleans.CodeGenerator
                     ErrorCode.CodeGenIgnoringTypes,
                     "Skipping serializer generation for nested type {0}. If this type is used frequently, you may wish to consider making it non-nested.",
                     t.Name);
+                return false;
             }
 
             if (t.IsConstructedGenericType)
             {
-                var args = t.GetGenericArguments();
+                var args = typeInfo.GetGenericArguments();
                 foreach (var arg in args)
                 {
                     RecordTypeToGenerate(arg, module, targetAssembly);
@@ -91,7 +95,7 @@ namespace Orleans.CodeGenerator
                 return RecordTypeToGenerate(typeInfo.GetGenericTypeDefinition(), module, targetAssembly);
             }
 
-            if (typeInfo.IsOrleansPrimitive() || (SerializationManager.GetSerializer(t) != null) ||
+            if (typeInfo.IsOrleansPrimitive() || this.serializationManager.HasSerializer(t) ||
                 typeof(IAddressable).GetTypeInfo().IsAssignableFrom(t)) return false;
 
             if (typeInfo.Namespace != null && (typeInfo.Namespace.Equals("System") || typeInfo.Namespace.StartsWith("System.")))
@@ -104,15 +108,12 @@ namespace Orleans.CodeGenerator
 
             if (TypeUtils.HasAllSerializationMethods(t)) return false;
 
-            // This check is here and not within TypeUtilities.IsTypeIsInaccessibleForSerialization() to prevent potential infinite recursions 
-            var skipSerialzerGeneration = t.GetAllFields()
-                .Any(
-                    field => field.GetCustomAttribute<NonSerializedAttribute>() == null &&
-                        TypeUtilities.IsTypeIsInaccessibleForSerialization(
-                            field.FieldType,
-                            module,
-                            targetAssembly));
-            if (skipSerialzerGeneration)
+            // For every field which is not marked as [NonSerialized], check that it is accessible from code.
+            // If any of those fields are not accessible, then a serializer cannot be generated for this type.
+            var skipSerializerGeneration =
+                t.GetAllFields().Where(field => !field.IsNotSerialized())
+                    .Any(field => !TypeUtilities.IsAccessibleFromAssembly(field.FieldType, targetAssembly));
+            if (skipSerializerGeneration)
             {
                 return false;
             }

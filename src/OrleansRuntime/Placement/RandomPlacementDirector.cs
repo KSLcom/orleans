@@ -1,21 +1,36 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Orleans.GrainDirectory;
 
 namespace Orleans.Runtime.Placement
 {
-    internal class RandomPlacementDirector : PlacementDirector
+    internal class RandomPlacementDirector : IPlacementDirector<RandomPlacement>, IActivationSelector<RandomPlacement>
     {
         private readonly SafeRandom random = new SafeRandom();
 
-        internal override async Task<PlacementResult> OnSelectActivation(
-            PlacementStrategy strategy, GrainId target, IPlacementContext context)
+        public virtual async Task<PlacementResult> OnSelectActivation(
+            PlacementStrategy strategy, GrainId target, IPlacementRuntime context)
         {
-            List<ActivationAddress> places = (await context.Lookup(target)).Addresses;
+            List<ActivationAddress> places = (await context.FullLookup(target)).Addresses;
             return ChooseRandomActivation(places, context);
         }
 
-        protected PlacementResult ChooseRandomActivation(List<ActivationAddress> places, IPlacementContext context)
+        public bool TrySelectActivationSynchronously(
+            PlacementStrategy strategy, GrainId target, IPlacementRuntime context, out PlacementResult placementResult)
+        {
+            AddressesAndTag addressesAndTag;
+            if (context.FastLookup(target, out addressesAndTag))
+            {
+                placementResult = ChooseRandomActivation(addressesAndTag.Addresses, context);
+                return true;
+            }
+
+            placementResult = null;
+            return false;
+        }
+
+        protected PlacementResult ChooseRandomActivation(List<ActivationAddress> places, IPlacementRuntime context)
         {
             if (places.Count <= 0)
             {
@@ -37,13 +52,11 @@ namespace Orleans.Runtime.Placement
             return PlacementResult.IdentifySelection(places[random.Next(places.Count)]);
         }
 
-        internal override Task<PlacementResult> OnAddActivation(
-            PlacementStrategy strategy, GrainId grain, IPlacementContext context)
+        public virtual Task<SiloAddress> OnAddActivation(
+            PlacementStrategy strategy, PlacementTarget target, IPlacementContext context)
         {
-            var grainType = context.GetGrainTypeName(grain);
-            var allSilos = context.AllActiveSilos;
-            return Task.FromResult(
-                PlacementResult.SpecifyCreation(allSilos[random.Next(allSilos.Count)], strategy, grainType));
+            var allSilos = context.GetCompatibleSilos(target);
+            return Task.FromResult(allSilos[random.Next(allSilos.Count)]);
         }
     }
 }

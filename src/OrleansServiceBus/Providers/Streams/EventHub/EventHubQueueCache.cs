@@ -1,9 +1,10 @@
-﻿
-using System;
-using Microsoft.ServiceBus.Messaging;
+﻿using System;
+using Microsoft.Azure.EventHubs;
 using Orleans.Providers.Streams.Common;
 using Orleans.Runtime;
+using Orleans.Serialization;
 using Orleans.Streams;
+using System.Collections.Generic;
 
 namespace Orleans.ServiceBus.Providers
 {
@@ -22,8 +23,9 @@ namespace Orleans.ServiceBus.Providers
         /// Underlying message cache implementation
         /// </summary>
         protected readonly PooledQueueCache<EventData, TCachedMessage> cache;
-        private readonly AveragingCachePressureMonitor cachePressureMonitor;
-
+        private readonly AggregatedCachePressureMonitor cachePressureMonitor;
+        private IEvictionStrategy<TCachedMessage> evictionStrategy;
+        private ICacheMonitor cacheMonitor;
         /// <summary>
         /// Logic used to store queue position
         /// </summary>
@@ -37,15 +39,37 @@ namespace Orleans.ServiceBus.Providers
         /// <param name="cacheDataAdapter">Performs data transforms appropriate for the various types of queue data.</param>
         /// <param name="comparer">Compares cached data</param>
         /// <param name="logger"></param>
-        protected EventHubQueueCache(int defaultMaxAddCount, IStreamQueueCheckpointer<string> checkpointer, ICacheDataAdapter<EventData, TCachedMessage> cacheDataAdapter, ICacheDataComparer<TCachedMessage> comparer, Logger logger)
+        /// <param name="evictionStrategy">Eviction stretagy manage purge related events</param>
+        /// <param name="cacheMonitor"></param>
+        /// <param name="cacheMonitorWriteInterval"></param>
+        protected EventHubQueueCache(int defaultMaxAddCount, IStreamQueueCheckpointer<string> checkpointer, ICacheDataAdapter<EventData, TCachedMessage> cacheDataAdapter,
+            ICacheDataComparer<TCachedMessage> comparer, Logger logger, IEvictionStrategy<TCachedMessage> evictionStrategy,
+            ICacheMonitor cacheMonitor, TimeSpan? cacheMonitorWriteInterval)
         {
             this.defaultMaxAddCount = defaultMaxAddCount;
             Checkpointer = checkpointer;
-            cache = new PooledQueueCache<EventData, TCachedMessage>(cacheDataAdapter, comparer, logger);
-            cacheDataAdapter.PurgeAction = cache.Purge;
-            cache.OnPurged = OnPurge;
+            cache = new PooledQueueCache<EventData, TCachedMessage>(cacheDataAdapter, comparer, logger, cacheMonitor, cacheMonitorWriteInterval);
+            this.cacheMonitor = cacheMonitor;
+            this.evictionStrategy = evictionStrategy;
+            this.evictionStrategy.OnPurged = this.OnPurge;
+            this.cachePressureMonitor = new AggregatedCachePressureMonitor(logger, cacheMonitor);
+            EvictionStrategyCommonUtils.WireUpEvictionStrategy<EventData, TCachedMessage>(this.cache, cacheDataAdapter, this.evictionStrategy);
+        }
 
-            cachePressureMonitor = new AveragingCachePressureMonitor(logger);
+        /// <inheritdoc />
+        public void SignalPurge()
+        {
+            this.evictionStrategy.PerformPurge(DateTime.UtcNow);
+        }
+
+        /// <summary>
+        /// Add cache pressure monitor to the cache's back pressure algorithm
+        /// </summary>
+        /// <param name="monitor"></param>
+        public void AddCachePressureMonitor(ICachePressureMonitor monitor)
+        {
+            monitor.CacheMonitor = this.cacheMonitor;
+            this.cachePressureMonitor.AddCachePressureMonitor(monitor);
         }
 
         /// <summary>
@@ -54,7 +78,7 @@ namespace Orleans.ServiceBus.Providers
         /// <param name="lastItemPurged"></param>
         /// <returns></returns>
         protected abstract string GetOffset(TCachedMessage lastItemPurged);
-        
+
         /// <summary>
         /// cachePressureContribution should be a double between 0-1, indicating how much danger the item is of being removed from the cache.
         ///   0 indicating  no danger,
@@ -71,7 +95,7 @@ namespace Orleans.ServiceBus.Providers
         /// <filterpriority>2</filterpriority>
         public void Dispose()
         {
-            cache.OnPurged = null;
+            this.evictionStrategy.OnPurged = null;
         }
 
         /// <summary>
@@ -101,7 +125,7 @@ namespace Orleans.ServiceBus.Providers
         }
 
         /// <summary>
-        /// Add an EventHub EventData to the cache.
+        /// Add an Eventhub EventData to the cache
         /// </summary>
         /// <param name="message"></param>
         /// <param name="dequeueTimeUtc"></param>
@@ -109,6 +133,16 @@ namespace Orleans.ServiceBus.Providers
         public StreamPosition Add(EventData message, DateTime dequeueTimeUtc)
         {
             return cache.Add(message, dequeueTimeUtc);
+        }
+        /// <summary>
+        /// Add a list of EventHub EventData to the cache.
+        /// </summary>
+        /// <param name="messages"></param>
+        /// <param name="dequeueTimeUtc"></param>
+        /// <returns></returns>
+        public List<StreamPosition> Add(List<EventData> messages, DateTime dequeueTimeUtc)
+        {
+            return cache.Add(messages, dequeueTimeUtc);
         }
 
         /// <summary>
@@ -142,68 +176,6 @@ namespace Orleans.ServiceBus.Providers
 
     }
 
-    internal class AveragingCachePressureMonitor
-    {
-        private static readonly TimeSpan checkPeriod = TimeSpan.FromSeconds(2);
-        const double pressureThreshold = 1.0 / 3.0;
-        private readonly Logger logger;
-
-        private double accumulatedCachePressure;
-        private double cachePressureContributionCount;
-        private DateTime nextCheckedTime;
-        private bool isUnderPressure;
-
-        public AveragingCachePressureMonitor(Logger logger)
-        {
-            this.logger = logger.GetSubLogger("flowcontrol", "-");
-            nextCheckedTime = DateTime.MinValue;
-            isUnderPressure = false;
-        }
-
-        public void RecordCachePressureContribution(double cachePressureContribution)
-        {
-            // Weight unhealthy contributions thrice as much as healthy ones.
-            // This is a crude compensation for the fact that healthy consumers wil consume more often than unhealthy ones.
-            double weight = cachePressureContribution < pressureThreshold ? 1.0 : 3.0;
-            accumulatedCachePressure += cachePressureContribution * weight;
-            cachePressureContributionCount += weight;
-        }
-
-        public bool IsUnderPressure(DateTime utcNow)
-        {
-            if (nextCheckedTime < utcNow)
-            {
-                CalculatePressure();
-                nextCheckedTime = utcNow + checkPeriod;
-            }
-            return isUnderPressure;
-        }
-
-        private void CalculatePressure()
-        {
-            // if we don't have any contributions, don't change status
-            if (cachePressureContributionCount < 0.5)
-            {
-                // after 5 checks with no contributions, check anyway
-                cachePressureContributionCount += 0.1;
-                return;
-            }
-
-            double pressure = accumulatedCachePressure / cachePressureContributionCount;
-            bool wasUnderPressure = isUnderPressure;
-            isUnderPressure = pressure > pressureThreshold;
-            // If we changed state, log
-            if (isUnderPressure != wasUnderPressure)
-            {
-                logger.Info(isUnderPressure
-                    ? $"Ingesting messages too fast. Throttling message reading. AccumulatedCachePressure: {accumulatedCachePressure}, Contributions: {cachePressureContributionCount}, AverageCachePressure: {pressure}, Threshold: {pressureThreshold}"
-                    : $"Message ingestion is healthy. AccumulatedCachePressure: {accumulatedCachePressure}, Contributions: {cachePressureContributionCount}, AverageCachePressure: {pressure}, Threshold: {pressureThreshold}");
-            }
-            cachePressureContributionCount = 0.0;
-            accumulatedCachePressure = 0.0;
-        }
-    }
-
     /// <summary>
     /// Message cache that stores EventData as a CachedEventHubMessage in a pooled message cache
     /// </summary>
@@ -214,25 +186,55 @@ namespace Orleans.ServiceBus.Providers
         /// <summary>
         /// Construct cache given a buffer pool.  Will use default data adapter
         /// </summary>
-        /// <param name="checkpointer"></param>
-        /// <param name="bufferPool"></param>
-        /// <param name="timePurge"></param>
-        /// <param name="logger"></param>
-        public EventHubQueueCache(IStreamQueueCheckpointer<string> checkpointer, IObjectPool<FixedSizeBuffer> bufferPool, TimePurgePredicate timePurge, Logger logger)
-            : this(checkpointer, new EventHubDataAdapter(bufferPool, timePurge), logger)
+        /// <param name="checkpointer">queue checkpoint writer</param>
+        /// <param name="bufferPool">buffer pool cache should use for raw buffers</param>
+        /// <param name="timePurge">predicate used to trigger time based purges</param>
+        /// <param name="logger">cache logger</param>
+        /// <param name="serializationManager"></param>
+        /// <param name="cacheMonitor"></param>
+        /// <param name="cacheMonitorWriteInterval"></param>
+        public EventHubQueueCache(IStreamQueueCheckpointer<string> checkpointer, IObjectPool<FixedSizeBuffer> bufferPool, TimePurgePredicate timePurge, Logger logger,
+            SerializationManager serializationManager, ICacheMonitor cacheMonitor, TimeSpan? cacheMonitorWriteInterval)
+            : this(checkpointer, new EventHubDataAdapter(serializationManager, bufferPool), EventHubDataComparer.Instance, logger,
+                  new EventHubCacheEvictionStrategy(logger, timePurge, cacheMonitor, cacheMonitorWriteInterval), cacheMonitor, cacheMonitorWriteInterval)
         {
         }
 
         /// <summary>
         /// Construct cache given a custom data adapter.
         /// </summary>
-        /// <param name="checkpointer"></param>
-        /// <param name="cacheDataAdapter"></param>
-        /// <param name="logger"></param>
-        public EventHubQueueCache(IStreamQueueCheckpointer<string> checkpointer, ICacheDataAdapter<EventData, CachedEventHubMessage> cacheDataAdapter, Logger logger)
-            : base(EventHubAdapterReceiver.MaxMessagesPerRead, checkpointer, cacheDataAdapter, EventHubDataComparer.Instance, logger)
+        /// <param name="checkpointer">queue checkpoint writer</param>
+        /// <param name="cacheDataAdapter">adapts queue data to cache</param>
+        /// <param name="comparer">compares stream information to cached data</param>
+        /// <param name="logger">cache logger</param>
+        /// <param name="evictionStrategy">eviction strategy for the cache</param>
+        /// <param name="cacheMonitor"></param>
+        /// <param name="cacheMonitorWriteInterval"></param>
+        public EventHubQueueCache(IStreamQueueCheckpointer<string> checkpointer, ICacheDataAdapter<EventData, CachedEventHubMessage> cacheDataAdapter,
+            ICacheDataComparer<CachedEventHubMessage> comparer, Logger logger, IEvictionStrategy<CachedEventHubMessage> evictionStrategy,
+            ICacheMonitor cacheMonitor, TimeSpan? cacheMonitorWriteInterval)
+            : base(EventHubAdapterReceiver.MaxMessagesPerRead, checkpointer, cacheDataAdapter, comparer, logger, evictionStrategy, cacheMonitor, cacheMonitorWriteInterval)
         {
-            log = logger.GetSubLogger("messagecache", "-");
+            log = logger.GetSubLogger(this.GetType().Name);
+        }
+
+        /// <summary>
+        /// Construct cache given a custom data adapter.
+        /// </summary>
+        /// <param name="defaultMaxAddCount">Max number of message that can be added to cache from single read</param>
+        /// <param name="checkpointer">queue checkpoint writer</param>
+        /// <param name="cacheDataAdapter">adapts queue data to cache</param>
+        /// <param name="comparer">compares stream information to cached data</param>
+        /// <param name="logger">cache logger</param>
+        /// <param name="evictionStrategy">eviction strategy for the cache</param>
+        /// <param name="cacheMonitor"></param>
+        /// <param name="cacheMonitorWriteInterval"></param>
+        public EventHubQueueCache(int defaultMaxAddCount, IStreamQueueCheckpointer<string> checkpointer, ICacheDataAdapter<EventData, CachedEventHubMessage> cacheDataAdapter,
+            ICacheDataComparer<CachedEventHubMessage> comparer, Logger logger, IEvictionStrategy<CachedEventHubMessage> evictionStrategy,
+            ICacheMonitor cacheMonitor, TimeSpan? cacheMonitorWriteInterval)
+            : base(defaultMaxAddCount, checkpointer, cacheDataAdapter, comparer, logger, evictionStrategy, cacheMonitor, cacheMonitorWriteInterval)
+        {
+            log = logger.GetSubLogger(this.GetType().Name);
         }
 
         /// <summary>
@@ -246,6 +248,7 @@ namespace Orleans.ServiceBus.Providers
             {
                 log.Verbose($"CachePeriod: EnqueueTimeUtc: {LogFormatter.PrintDate(lastItemPurged.Value.EnqueueTimeUtc)} to {LogFormatter.PrintDate(newestItem.Value.EnqueueTimeUtc)}, DequeueTimeUtc: {LogFormatter.PrintDate(lastItemPurged.Value.DequeueTimeUtc)} to {LogFormatter.PrintDate(newestItem.Value.DequeueTimeUtc)}");
             }
+            base.OnPurge(lastItemPurged, newestItem);
         }
 
         /// <summary>
@@ -284,8 +287,7 @@ namespace Orleans.ServiceBus.Providers
             IEventHubPartitionLocation location = (IEventHubPartitionLocation) token;
             double cacheSize = cache.Newest.Value.SequenceNumber - cache.Oldest.Value.SequenceNumber;
             long distanceFromNewestMessage = cache.Newest.Value.SequenceNumber - location.SequenceNumber;
-
-            // pressure is the ratio of the distance from the front of the cache to the 
+            // pressure is the ratio of the distance from the front of the cache to the
             cachePressureContribution = distanceFromNewestMessage/cacheSize;
 
             return true;

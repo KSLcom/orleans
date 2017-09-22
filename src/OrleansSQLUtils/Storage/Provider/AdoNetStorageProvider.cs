@@ -12,6 +12,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 
 
 namespace Orleans.Storage
@@ -59,6 +60,8 @@ namespace Orleans.Storage
     [DebuggerDisplay("Name = {Name}, ConnectionString = {Storage.ConnectionString}")]
     public class AdoNetStorageProvider: IStorageProvider
     {
+        private SerializationManager serializationManager;
+
         /// <summary>
         /// The Service ID for which this relational provider is used.
         /// </summary>
@@ -164,10 +167,12 @@ namespace Orleans.Storage
                 throw new BadProviderConfigException($"The {DataConnectionStringPropertyName} setting has not been configured. Add a {DataConnectionStringPropertyName} setting with a valid connection string.");
             }
 
+            this.serializationManager = providerRuntime.ServiceProvider.GetRequiredService<SerializationManager>();
+
             //NOTE: StorageSerializationPicker should be defined outside and given as a parameter in constructor or via Init in IProviderConfiguration perhaps.
             //Currently this limits one's options to much to the current situation of providing only one serializer for serialization and deserialization
             //with no regard to state update or serializer changes. Maybe have this serialized as a JSON in props and read via a key?
-            StorageSerializationPicker = new DefaultRelationalStoragePicker(ConfigureDeserializers(config), ConfigureSerializers(config));
+            StorageSerializationPicker = new DefaultRelationalStoragePicker(this.ConfigureDeserializers(config, providerRuntime), this.ConfigureSerializers(config, providerRuntime));
 
             //NOTE: Currently there should be only one pair of providers given. That is, only UseJsonFormatPropertyName, UseXmlFormatPropertyName or UseBinaryFormatPropertyName.
             if(StorageSerializationPicker.Deserializers.Count > 1 || StorageSerializationPicker.Serializers.Count > 1)
@@ -177,8 +182,8 @@ namespace Orleans.Storage
 
             if(StorageSerializationPicker.Deserializers.Count == 0 || StorageSerializationPicker.Serializers.Count == 0)
             {
-                StorageSerializationPicker.Deserializers.Add(new OrleansStorageDefaultBinaryDeserializer(UseBinaryFormatPropertyName));
-                StorageSerializationPicker.Serializers.Add(new OrleansStorageDefaultBinarySerializer(UseBinaryFormatPropertyName));
+                StorageSerializationPicker.Deserializers.Add(new OrleansStorageDefaultBinaryDeserializer(this.serializationManager, UseBinaryFormatPropertyName));
+                StorageSerializationPicker.Serializers.Add(new OrleansStorageDefaultBinarySerializer(this.serializationManager, UseBinaryFormatPropertyName));
             }
 
             var connectionInvariant = config.Properties.ContainsKey(DataConnectionInvariantPropertyName) ? config.Properties[DataConnectionInvariantPropertyName] : DefaultAdoInvariantInvariantPropertyName;
@@ -207,7 +212,7 @@ namespace Orleans.Storage
         /// </summary>
         public Task Close()
         {
-            return TaskDone.Done;
+            return Task.CompletedTask;
         }
 
 
@@ -227,12 +232,14 @@ namespace Orleans.Storage
             string storageVersion = null;
             try
             {
+                var grainIdHash = HashPicker.PickHasher(ServiceId, Name, baseGrainType, grainReference, grainState).Hash(grainId.GetHashBytes());
+                var grainTypeHash = HashPicker.PickHasher(ServiceId, Name, baseGrainType, grainReference, grainState).Hash(Encoding.UTF8.GetBytes(baseGrainType));
                 var clearRecord = (await Storage.ReadAsync(CurrentOperationalQueries.ClearState, command =>
                 {
-                    command.AddParameter("GrainIdHash", HashPicker.PickHasher(ServiceId, Name, baseGrainType, grainReference, grainState).Hash(grainId.GetHashBytes()));
+                    command.AddParameter("GrainIdHash", grainIdHash);
                     command.AddParameter("GrainIdN0", grainId.N0Key);
                     command.AddParameter("GrainIdN1", grainId.N1Key);
-                    command.AddParameter("GrainTypeHash", HashPicker.PickHasher(ServiceId, Name, baseGrainType, grainReference, grainState).Hash(Encoding.UTF8.GetBytes(baseGrainType)));
+                    command.AddParameter("GrainTypeHash", grainTypeHash);
                     command.AddParameter("GrainTypeString", baseGrainType);
                     command.AddParameter("GrainIdExtensionString", grainId.StringKey);
                     command.AddParameter("ServiceId", ServiceId);
@@ -287,12 +294,14 @@ namespace Orleans.Storage
 
                 var commandBehavior = choice.PreferStreaming ? CommandBehavior.SequentialAccess : CommandBehavior.Default;
                 var grainStateType = grainState.State.GetType();
+                var grainIdHash = HashPicker.PickHasher(ServiceId, Name, baseGrainType, grainReference, grainState).Hash(grainId.GetHashBytes());
+                var grainTypeHash = HashPicker.PickHasher(ServiceId, Name, baseGrainType, grainReference, grainState).Hash(Encoding.UTF8.GetBytes(baseGrainType));
                 var readRecords = (await Storage.ReadAsync(CurrentOperationalQueries.ReadFromStorage, (command =>
                 {
-                    command.AddParameter("GrainIdHash", HashPicker.PickHasher(ServiceId, Name, baseGrainType, grainReference, grainState).Hash(grainId.GetHashBytes()));
+                    command.AddParameter("GrainIdHash", grainIdHash);
                     command.AddParameter("GrainIdN0", grainId.N0Key);
                     command.AddParameter("GrainIdN1", grainId.N1Key);
-                    command.AddParameter("GrainTypeHash", HashPicker.PickHasher(ServiceId, Name, baseGrainType, grainReference, grainState).Hash(Encoding.UTF8.GetBytes(baseGrainType)));
+                    command.AddParameter("GrainTypeHash", grainTypeHash);
                     command.AddParameter("GrainTypeString", baseGrainType);
                     command.AddParameter("GrainIdExtensionString", grainId.StringKey);
                     command.AddParameter("ServiceId", ServiceId);
@@ -402,19 +411,20 @@ namespace Orleans.Storage
             string storageVersion = null;
             try
             {
-
+                var grainIdHash = HashPicker.PickHasher(ServiceId, Name, baseGrainType, grainReference, grainState).Hash(grainId.GetHashBytes());
+                var grainTypeHash = HashPicker.PickHasher(ServiceId, Name, baseGrainType, grainReference, grainState).Hash(Encoding.UTF8.GetBytes(baseGrainType));
                 var writeRecord = await Storage.ReadAsync(CurrentOperationalQueries.WriteToStorage, command =>
                 {
-                    command.AddParameter("GrainIdHash", HashPicker.PickHasher(ServiceId, Name, baseGrainType, grainReference, grainState).Hash(grainId.GetHashBytes()));
+                    command.AddParameter("GrainIdHash", grainIdHash);
                     command.AddParameter("GrainIdN0", grainId.N0Key);
                     command.AddParameter("GrainIdN1", grainId.N1Key);
-                    command.AddParameter("GrainTypeHash", HashPicker.PickHasher(ServiceId, Name, baseGrainType, grainReference, grainState).Hash(Encoding.UTF8.GetBytes(baseGrainType)));
-                    command.AddParameter("GrainTypeString", (string)baseGrainType);
+                    command.AddParameter("GrainTypeHash", grainTypeHash);
+                    command.AddParameter("GrainTypeString", baseGrainType);
                     command.AddParameter("GrainIdExtensionString", grainId.StringKey);
                     command.AddParameter("ServiceId", ServiceId);
                     command.AddParameter("GrainStateVersion", !string.IsNullOrWhiteSpace(grainState.ETag) ? int.Parse(grainState.ETag, CultureInfo.InvariantCulture) : default(int?));
 
-                    SerializationChoice serializer = StorageSerializationPicker.PickSerializer(ServiceId, Name, (string)baseGrainType, grainReference, grainState);
+                    SerializationChoice serializer = StorageSerializationPicker.PickSerializer(ServiceId, Name, baseGrainType, grainReference, grainState);
                     command.AddParameter("PayloadBinary", (byte[])(serializer.Serializer.Tag == UseBinaryFormatPropertyName ? serializer.Serializer.Serialize(data) : null));
                     command.AddParameter("PayloadJson", (string)(serializer.Serializer.Tag == UseJsonFormatPropertyName ? serializer.Serializer.Serialize(data) : null));
                     command.AddParameter("PayloadXml", (string)(serializer.Serializer.Tag == UseXmlFormatPropertyName ? serializer.Serializer.Serialize(data) : null));
@@ -539,13 +549,13 @@ namespace Orleans.Storage
         }
 
 
-        private static ICollection<IStorageDeserializer> ConfigureDeserializers(IProviderConfiguration config)
+        private ICollection<IStorageDeserializer> ConfigureDeserializers(IProviderConfiguration config, IProviderRuntime providerRuntime)
         {
             const string @true = "true";
             var deserializers = new List<IStorageDeserializer>();
             if(config.Properties.ContainsKey(UseJsonFormatPropertyName) && @true.Equals(config.Properties[UseJsonFormatPropertyName], StringComparison.OrdinalIgnoreCase))
             {
-                var jsonSettings = OrleansJsonSerializer.UpdateSerializerSettings(OrleansJsonSerializer.GetDefaultSerializerSettings(), config);
+                var jsonSettings = OrleansJsonSerializer.UpdateSerializerSettings(OrleansJsonSerializer.GetDefaultSerializerSettings(this.serializationManager, providerRuntime.GrainFactory), config);
                 deserializers.Add(new OrleansStorageDefaultJsonDeserializer(jsonSettings, UseJsonFormatPropertyName));
             }
 
@@ -556,20 +566,20 @@ namespace Orleans.Storage
 
             if(config.Properties.ContainsKey(UseBinaryFormatPropertyName) && @true.Equals(config.Properties[UseBinaryFormatPropertyName], StringComparison.OrdinalIgnoreCase))
             {
-                deserializers.Add(new OrleansStorageDefaultBinaryDeserializer(UseBinaryFormatPropertyName));
+                deserializers.Add(new OrleansStorageDefaultBinaryDeserializer(this.serializationManager, UseBinaryFormatPropertyName));
             }
 
             return deserializers;
         }
 
 
-        private static ICollection<IStorageSerializer> ConfigureSerializers(IProviderConfiguration config)
+        private ICollection<IStorageSerializer> ConfigureSerializers(IProviderConfiguration config, IProviderRuntime providerRuntime)
         {
             const string @true = "true";
             var serializers = new List<IStorageSerializer>();
             if(config.Properties.ContainsKey(UseJsonFormatPropertyName) && @true.Equals(config.Properties[UseJsonFormatPropertyName], StringComparison.OrdinalIgnoreCase))
             {
-                var jsonSettings = OrleansJsonSerializer.UpdateSerializerSettings(OrleansJsonSerializer.GetDefaultSerializerSettings(), config);
+                var jsonSettings = OrleansJsonSerializer.UpdateSerializerSettings(OrleansJsonSerializer.GetDefaultSerializerSettings(this.serializationManager, providerRuntime.GrainFactory), config);
                 serializers.Add(new OrleansStorageDefaultJsonSerializer(jsonSettings, UseJsonFormatPropertyName));
             }
 
@@ -580,7 +590,7 @@ namespace Orleans.Storage
 
             if(config.Properties.ContainsKey(UseBinaryFormatPropertyName) && @true.Equals(config.Properties[UseBinaryFormatPropertyName], StringComparison.OrdinalIgnoreCase))
             {
-                serializers.Add(new OrleansStorageDefaultBinarySerializer(UseBinaryFormatPropertyName));
+                serializers.Add(new OrleansStorageDefaultBinarySerializer(this.serializationManager, UseBinaryFormatPropertyName));
             }
 
             return serializers;

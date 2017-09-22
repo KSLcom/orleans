@@ -115,15 +115,23 @@ namespace OrleansAWSUtils.Storage
 
         private void CreateClient()
         {
-            if (service.StartsWith("http://", StringComparison.InvariantCultureIgnoreCase) ||
-                service.StartsWith("https://", StringComparison.InvariantCultureIgnoreCase))
+            if (service.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                service.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             {
-                ddbClient = new AmazonDynamoDBClient(new AmazonDynamoDBConfig { ServiceURL = service });
+                // Local DynamoDB instance (for testing)
+                var credentials = new BasicAWSCredentials("dummy", "dummyKey");
+                ddbClient = new AmazonDynamoDBClient(credentials, new AmazonDynamoDBConfig { ServiceURL = service });
+            }
+            else if (!string.IsNullOrEmpty(accessKey) && !string.IsNullOrEmpty(secretKey))
+            {
+                // AWS DynamoDB instance (auth via explicit credentials)
+                var credentials = new BasicAWSCredentials(accessKey, secretKey);
+                ddbClient = new AmazonDynamoDBClient(credentials, new AmazonDynamoDBConfig { ServiceURL = service, RegionEndpoint = AWSUtils.GetRegionEndpoint(service) });
             }
             else
             {
-                var credentials = new BasicAWSCredentials(accessKey, secretKey);
-                ddbClient = new AmazonDynamoDBClient(credentials, new AmazonDynamoDBConfig { ServiceURL = service, RegionEndpoint = AWSUtils.GetRegionEndpoint(service) });
+                // AWS DynamoDB instance (implicit auth - EC2 IAM Roles etc)
+                ddbClient = new AmazonDynamoDBClient(new AmazonDynamoDBConfig { ServiceURL = service, RegionEndpoint = AWSUtils.GetRegionEndpoint(service) });
             }
         }
 
@@ -377,7 +385,7 @@ namespace OrleansAWSUtils.Storage
             if (toDelete == null) throw new ArgumentNullException("collection");
 
             if (toDelete.Count == 0)
-                return TaskDone.Done;
+                return Task.CompletedTask;
 
             try
             {
@@ -538,7 +546,7 @@ namespace OrleansAWSUtils.Storage
             if (toCreate == null) throw new ArgumentNullException("collection");
 
             if (toCreate.Count == 0)
-                return TaskDone.Done;
+                return Task.CompletedTask;
 
             try
             {
