@@ -2,8 +2,8 @@ using System;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging.Abstractions;
 using Orleans.Runtime;
-using Orleans.Runtime.Configuration;
 using Orleans.TestingHost;
 using TestExtensions;
 using UnitTests.GrainInterfaces;
@@ -20,27 +20,19 @@ namespace UnitTests.General
 
         public class Fixture : BaseTestClusterFixture
         {
-            protected override TestCluster CreateTestCluster()
+            protected override void ConfigureTestCluster(TestClusterBuilder builder)
             {
-                var options = new TestClusterOptions(1);
-                options.UseSiloBuilderFactory<TestSiloBuilderFactory>();
-                return new TestCluster(options);
+                builder.Options.InitialSilosCount = 1;
+                builder.AddSiloBuilderConfigurator<TestSiloBuilderConfigurator>();
             }
 
-            private class TestSiloBuilderFactory : ISiloBuilderFactory
+            private class TestSiloBuilderConfigurator : ISiloBuilderConfigurator
             {
-                public ISiloBuilder CreateSiloBuilder(string siloName, ClusterConfiguration clusterConfiguration)
+                public void Configure(ISiloHostBuilder hostBuilder)
                 {
-                    return new SiloBuilder()
-                        .ConfigureSiloName(siloName)
-                        .UseConfiguration(clusterConfiguration)
-                        .ConfigureServices(ConfigureServices);
+                    hostBuilder.ConfigureServices(services =>
+                        services.Replace(ServiceDescriptor.Singleton(typeof(IGrainActivator), typeof(HardcodedGrainActivator))));
                 }
-            }
-
-            private static void ConfigureServices(IServiceCollection services)
-            {
-                services.Replace(ServiceDescriptor.Singleton(typeof(IGrainActivator), typeof(HardcodedGrainActivator)));
             }
         }
 
@@ -80,7 +72,6 @@ namespace UnitTests.General
         {
             public const string HardcodedValue = "Hardcoded Test Value";
             private int numberOfReleasedInstances;
-
             public HardcodedGrainActivator(IServiceProvider service) : base(service)
             {
             }
@@ -89,7 +80,7 @@ namespace UnitTests.General
             {
                 if (context.GrainType == typeof(ExplicitlyRegisteredSimpleDIGrain))
                 {
-                    return new ExplicitlyRegisteredSimpleDIGrain(new InjectedService(null), HardcodedValue, numberOfReleasedInstances);
+                    return new ExplicitlyRegisteredSimpleDIGrain(new InjectedService(NullLoggerFactory.Instance), HardcodedValue, numberOfReleasedInstances);
                 }
 
                 return base.Create(context);

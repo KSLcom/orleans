@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Threading.Tasks;
-using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
+using Orleans;
 using Orleans.Configuration;
-using Orleans.Providers;
 using Orleans.Runtime;
 using Orleans.Runtime.Configuration;
 using Orleans.TestingHost;
@@ -12,6 +14,7 @@ using UnitTests.GrainInterfaces;
 using UnitTests.Grains;
 using Xunit;
 using Orleans.Hosting;
+using Orleans.Serialization;
 
 namespace UnitTests.General
 {
@@ -20,55 +23,96 @@ namespace UnitTests.General
     {
         public class Fixture : BaseTestClusterFixture
         {
-            protected override TestCluster CreateTestCluster()
+            protected override void ConfigureTestCluster(TestClusterBuilder builder)
             {
-                var options = new TestClusterOptions(2);
-                options.ClusterConfiguration.AddMemoryStorageProvider("Default");
-                options.ClusterConfiguration.AddMemoryStorageProvider("PubSubStore");
-                options.ClusterConfiguration.AddSimpleMessageStreamProvider("SMSProvider");
-                options.ClientConfiguration.AddSimpleMessageStreamProvider("SMSProvider");
-                options.ClusterConfiguration.Globals.RegisterBootstrapProvider<PreInvokeCallbackBootrstrapProvider>(
-                    "PreInvokeCallbackBootrstrapProvider");
-                options.UseSiloBuilderFactory<SiloInvokerTestSiloBuilderFactory>();
-                return new TestCluster(options);
+                builder.ConfigureHostConfiguration(TestDefaultConfiguration.ConfigureHostConfiguration);
+                builder.AddSiloBuilderConfigurator<SiloInvokerTestSiloBuilderConfigurator>();
+                builder.AddClientBuilderConfigurator<ClientConfigurator>();
             }
 
-            private class SiloInvokerTestSiloBuilderFactory : ISiloBuilderFactory
+            private class SiloInvokerTestSiloBuilderConfigurator : ISiloBuilderConfigurator
             {
-                public ISiloBuilder CreateSiloBuilder(string siloName, ClusterConfiguration clusterConfiguration)
+                public void Configure(ISiloHostBuilder hostBuilder)
                 {
-                    return new SiloBuilder()
-                        .ConfigureSiloName(siloName)
-                        .UseConfiguration(clusterConfiguration)
-                        .ConfigureServices(ConfigureServices);
+                    hostBuilder
+                        .AddIncomingGrainCallFilter(context =>
+                        {
+                            if (string.Equals(context.InterfaceMethod.Name, nameof(IGrainCallFilterTestGrain.GetRequestContext)))
+                            {
+                                if (RequestContext.Get(GrainCallFilterTestConstants.Key) != null) throw new InvalidOperationException();
+                                RequestContext.Set(GrainCallFilterTestConstants.Key, "1");
+                            }
+
+                            return context.Invoke();
+                        })
+                        .AddIncomingGrainCallFilter<GrainCallFilterWithDependencies>()
+                        .AddOutgoingGrainCallFilter(async ctx =>
+                        {
+                            if (ctx.InterfaceMethod?.Name == "Echo")
+                            {
+                                // Concatenate the input to itself.
+                                var orig = (string) ctx.Arguments[0];
+                                ctx.Arguments[0] = orig + orig;
+                            }
+
+                            await ctx.Invoke();
+                        })
+                        .AddSimpleMessageStreamProvider("SMSProvider")
+                        .AddMemoryGrainStorageAsDefault()
+                        .AddMemoryGrainStorage("PubSubStore");
                 }
             }
-            
-            private static void ConfigureServices(IServiceCollection services)
+
+            private class ClientConfigurator : IClientBuilderConfigurator
             {
-                const string Key = GrainCallFilterTestConstants.Key;
-
-                services.AddGrainCallFilter(context =>
+                public void Configure(IConfiguration configuration, IClientBuilder clientBuilder)
                 {
-                    if (string.Equals(context.Method.Name, nameof(IGrainCallFilterTestGrain.GetRequestContext)))
+                    clientBuilder.AddOutgoingGrainCallFilter(async ctx =>
                     {
-                        if (RequestContext.Get(Key) != null) throw new InvalidOperationException();
-                        RequestContext.Set(Key, "1");
-                    }
+                        if (ctx.InterfaceMethod?.DeclaringType == typeof(IOutgoingMethodInterceptionGrain))
+                        {
+                            ctx.Arguments[1] = ((string) ctx.Arguments[1]).ToUpperInvariant();
+                        }
 
-                    return context.Invoke();
-                });
+                        await ctx.Invoke();
 
-                services.AddGrainCallFilter(context =>
+                        if (ctx.InterfaceMethod?.DeclaringType == typeof(IOutgoingMethodInterceptionGrain))
+                        {
+                            var result = (Dictionary<string, object>) ctx.Result;
+                            result["orig"] = result["result"];
+                            result["result"] = "intercepted!";
+                        }
+                    })
+                    .AddSimpleMessageStreamProvider("SMSProvider");
+                }
+            }
+        }
+
+        [SuppressMessage("ReSharper", "NotAccessedField.Local")]
+        public class GrainCallFilterWithDependencies : IIncomingGrainCallFilter
+        {
+            private readonly SerializationManager serializationManager;
+            private readonly Silo silo;
+            private readonly IGrainFactory grainFactory;
+
+            public GrainCallFilterWithDependencies(SerializationManager serializationManager, Silo silo, IGrainFactory grainFactory)
+            {
+                this.serializationManager = serializationManager;
+                this.silo = silo;
+                this.grainFactory = grainFactory;
+            }
+
+            public Task Invoke(IIncomingGrainCallContext context)
+            {
+                if (string.Equals(context.ImplementationMethod.Name, nameof(IGrainCallFilterTestGrain.GetRequestContext)))
                 {
-                    if (string.Equals(context.Method.Name, nameof(IGrainCallFilterTestGrain.GetRequestContext)))
+                    if (RequestContext.Get(GrainCallFilterTestConstants.Key) is string value)
                     {
-                        var value = RequestContext.Get(Key) as string;
-                        if (value != null) RequestContext.Set(Key, value + '2');
+                        RequestContext.Set(GrainCallFilterTestConstants.Key, value + '2');
                     }
+                }
 
-                    return context.Invoke();
-                });
+                return context.Invoke();
             }
         }
 
@@ -78,28 +122,48 @@ namespace UnitTests.General
         {
             this.fixture = fixture;
         }
-
+        
         /// <summary>
         /// Ensures that grain call filters are invoked around method calls in the correct order.
         /// </summary>
         /// <returns>A <see cref="Task"/> representing the work performed.</returns>
         [Fact]
-        public async Task GrainCallFilter_Order_Test()
+        public async Task GrainCallFilter_Outgoing_Test()
+        {
+            var grain = this.fixture.GrainFactory.GetGrain<IOutgoingMethodInterceptionGrain>(random.Next());
+            var grain2 = this.fixture.GrainFactory.GetGrain<IMethodInterceptionGrain>(random.Next());
+
+            // This grain method reads the context and returns it
+            var result = await grain.EchoViaOtherGrain(grain2, "ab");
+
+            // Original arg should have been:
+            // 1. Converted to upper case on the way out of the client: ab -> AB.
+            // 2. Doubled on the way out of grain1: AB -> ABAB.
+            // 3. Reversed on the wya in to grain2: ABAB -> BABA.
+            Assert.Equal("BABA", result["orig"] as string);
+            Assert.NotNull(result["result"]);
+            Assert.Equal("intercepted!", result["result"]);
+        }
+
+        /// <summary>
+        /// Ensures that grain call filters are invoked around method calls in the correct order.
+        /// </summary>
+        [Fact]
+        public async Task GrainCallFilter_Incoming_Order_Test()
         {
             var grain = this.fixture.GrainFactory.GetGrain<IGrainCallFilterTestGrain>(random.Next());
 
             // This grain method reads the context and returns it
             var context = await grain.GetRequestContext();
             Assert.NotNull(context);
-            Assert.Equal("123456", context);
+            Assert.Equal("1234", context);
         }
         
         /// <summary>
         /// Ensures that the invocation interceptor is invoked for stream subscribers.
         /// </summary>
-        /// <returns>A <see cref="Task"/> representing the work performed.</returns>
         [Fact]
-        public async Task GrainCallFilter_Stream_Test()
+        public async Task GrainCallFilter_Incoming_Stream_Test()
         {
             var streamProvider = this.fixture.Client.GetStreamProvider("SMSProvider");
             var id = Guid.NewGuid();
@@ -116,9 +180,8 @@ namespace UnitTests.General
         /// <summary>
         /// Tests that some invalid usages of invoker interceptors are denied.
         /// </summary>
-        /// <returns></returns>
         [Fact]
-        public async Task GrainCallFilter_InvalidOrder_Test()
+        public async Task GrainCallFilter_Incoming_InvalidOrder_Test()
         {
             var grain = this.fixture.GrainFactory.GetGrain<IGrainCallFilterTestGrain>(0);
 
@@ -133,9 +196,8 @@ namespace UnitTests.General
         /// <summary>
         /// Tests filters on just the grain level.
         /// </summary>
-        /// <returns></returns>
         [Fact]
-        public async Task GrainCallFilter_GrainLevel_Test()
+        public async Task GrainCallFilter_Incoming_GrainLevel_Test()
         {
             var grain = this.fixture.GrainFactory.GetGrain<IMethodInterceptionGrain>(0);
             var result = await grain.One();
@@ -154,9 +216,8 @@ namespace UnitTests.General
         /// <summary>
         /// Tests filters on generic grains.
         /// </summary>
-        /// <returns></returns>
         [Fact]
-        public async Task GrainCallFilter_GenericGrain_Test()
+        public async Task GrainCallFilter_Incoming_GenericGrain_Test()
         {
             var grain = this.fixture.GrainFactory.GetGrain<IGenericMethodInterceptionGrain<int>>(0);
             var result = await grain.GetInputAsString(679);
@@ -170,9 +231,8 @@ namespace UnitTests.General
         /// <summary>
         /// Tests filters on grains which implement multiple of the same generic interface.
         /// </summary>
-        /// <returns></returns>
         [Fact]
-        public async Task GrainCallFilter_ConstructedGenericInheritance_Test()
+        public async Task GrainCallFilter_Incoming_ConstructedGenericInheritance_Test()
         {
             var grain = this.fixture.GrainFactory.GetGrain<ITrickyMethodInterceptionGrain>(0);
 
@@ -193,9 +253,8 @@ namespace UnitTests.General
         /// <summary>
         /// Tests that grain call filters can handle exceptions.
         /// </summary>
-        /// <returns>A <see cref="Task"/> representing the work performed.</returns>
         [Fact]
-        public async Task GrainCallFilter_ExceptionHandling_Test()
+        public async Task GrainCallFilter_Incoming_ExceptionHandling_Test()
         {
             var grain = this.fixture.GrainFactory.GetGrain<IMethodInterceptionGrain>(random.Next());
 
@@ -209,9 +268,8 @@ namespace UnitTests.General
         /// <summary>
         /// Tests that grain call filters can throw exceptions.
         /// </summary>
-        /// <returns>A <see cref="Task"/> representing the work performed.</returns>
         [Fact]
-        public async Task GrainCallFilter_FilterThrows_Test()
+        public async Task GrainCallFilter_Incoming_FilterThrows_Test()
         {
             var grain = this.fixture.GrainFactory.GetGrain<IMethodInterceptionGrain>(random.Next());
             
@@ -224,43 +282,14 @@ namespace UnitTests.General
         /// Tests that if a grain call filter sets an incorrect result type for <see cref="Orleans.IGrainCallContext.Result"/>,
         /// an exception is thrown on the caller.
         /// </summary>
-        /// <returns>A <see cref="Task"/> representing the work performed.</returns>
         [Fact]
-        public async Task GrainCallFilter_SetIncorrectResultType_Test()
+        public async Task GrainCallFilter_Incoming_SetIncorrectResultType_Test()
         {
             var grain = this.fixture.GrainFactory.GetGrain<IMethodInterceptionGrain>(random.Next());
 
             // This grain method throws, but the exception should be handled by one of the filters and converted
             // into a specific message.
             await Assert.ThrowsAsync<InvalidCastException>(() => grain.IncorrectResultType());
-        }
-    }
-
-    public class PreInvokeCallbackBootrstrapProvider : IBootstrapProvider
-    {
-        public string Name { get; private set; }
-
-        public Task Init(string name, IProviderRuntime providerRuntime, IProviderConfiguration config)
-        {
-#pragma warning disable 618
-            providerRuntime.SetInvokeInterceptor((method, request, grain, invoker) =>
-#pragma warning restore 618
-            {
-                if (string.Equals(method.Name, nameof(IGrainCallFilterTestGrain.GetRequestContext)))
-                {
-                    var value = RequestContext.Get(GrainCallFilterTestConstants.Key) as string;
-                    if (value != null) RequestContext.Set(GrainCallFilterTestConstants.Key, value + '3');
-                }
-
-                return invoker.Invoke(grain, request);
-            });
-
-            return Task.FromResult(0);
-        }
-
-        public Task Close()
-        {
-            return Task.FromResult(0);
         }
     }
 }

@@ -18,13 +18,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Orleans.Core.Abstractions\Orleans.Core.Abstractions.csproj" />
-    <ProjectReference Include="..\Orleans\Orleans.csproj" />
-    <ProjectReference Include="..\OrleansRuntime\OrleansRuntime.csproj" />
-    <ProjectReference Include="..\OrleansTelemetryConsumers.Counters\OrleansTelemetryConsumers.Counters.csproj" />
-  </ItemGroup>
-
-  <ItemGroup>
     <None Update="app.manifest">
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </None>
@@ -44,5 +37,9 @@
       <PackagePath>tools\</PackagePath>
       <Visible>false</Visible>
     </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="$(MicrosoftExtensionsLoggingVersion)" />
   </ItemGroup>
 </Project>

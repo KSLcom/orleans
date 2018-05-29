@@ -3,27 +3,35 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Text;
+using Microsoft.Extensions.Logging;
+using Orleans;
+using Orleans.ApplicationParts;
 using Orleans.Providers;
 using Orleans.Runtime;
+using Orleans.Storage;
+using Orleans.TestingHost.Utils;
 using Xunit;
 
 namespace UnitTests
 {
-    public class AssemblyLoaderTests 
+    public class AssemblyLoaderTests :IDisposable
     {
         const string ExpectedFileName = "OrleansProviders.dll";
-        private readonly Logger logger = LogManager.GetLogger("AssemblyLoaderTests", LoggerType.Application);
 
-        [Fact, TestCategory("AssemblyLoader"), TestCategory("BVT"), TestCategory("Functional")]
-        public void AssemblyLoaderShouldDiscoverAssemblyLoaderTestAssembly()
+        private readonly ILoggerFactory defaultLoggerFactory;
+
+        private readonly ILogger logger;
+
+        public AssemblyLoaderTests()
         {
-            logger.Info("AssemblyLoaderTests.ClientShouldDiscoverDummyStreamProviderAssembly");
+            this.defaultLoggerFactory =
+                TestingUtils.CreateDefaultLoggerFactory("AssemblyLoaderTests.log");
+            this.logger = defaultLoggerFactory.CreateLogger<AssemblyLoaderTests>();
+        }
 
-            var exclusionList = NewExclusionList();
-            var loader = NewAssemblyLoader(exclusionList);
-
-            var t = typeof(Orleans.Providers.IMemoryMessageBodySerializer);
-            DiscoverAssemblies(loader, exclusionList);
+        public void Dispose()
+        {
+            this.defaultLoggerFactory.Dispose();
         }
 
         [Fact, TestCategory("AssemblyLoader"), TestCategory("Functional")]
@@ -90,9 +98,12 @@ namespace UnitTests
 
         private List<string> NewExclusionList()
         {
-            var exclusionList = new List<string>(AssemblyLoaderCriteria.SystemBinariesList);
-            exclusionList.Add("UnitTests.dll");
-            return exclusionList;
+            return new List<string>(new[]
+            {
+                "Orleans.Core.dll",
+                "OrleansRuntime.dll",
+                "UnitTests.dll"
+            });
         }
 
         private AssemblyLoader NewAssemblyLoader(List<string> exclusionList)

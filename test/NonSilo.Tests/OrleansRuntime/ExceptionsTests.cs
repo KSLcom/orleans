@@ -1,6 +1,7 @@
-
+using Microsoft.Extensions.Options;
+using Orleans.Configuration;
+using Orleans.Hosting;
 using Orleans.Runtime;
-using Orleans.Runtime.Configuration;
 using Orleans.TestingHost.Utils;
 using TestExtensions;
 using Xunit;
@@ -15,13 +16,13 @@ namespace UnitTests.OrleansRuntime
         public ExceptionsTests(TestEnvironmentFixture fixture)
         {
             this.fixture = fixture;
-            BufferPool.InitGlobalBufferPool(new MessagingConfiguration(false));
+            BufferPool.InitGlobalBufferPool(new ClientMessagingOptions());
         }
 
         [Fact, TestCategory("Functional"), TestCategory("Serialization")]
         public void SerializationTests_Exception_DotNet()
         {
-            var activationAddress = ActivationAddress.NewActivationAddress(SiloAddress.NewLocalAddress(12345), GrainId.NewId());
+            var activationAddress = ActivationAddress.NewActivationAddress(SiloAddressUtils.NewLocalSiloAddress(12345), GrainId.NewId());
            
             var original = new Catalog.NonExistentActivationException("Some message", activationAddress, false);
             var output = TestingUtils.RoundTripDotNetSerializer(original, this.fixture.GrainFactory, this.fixture.SerializationManager);
@@ -34,7 +35,7 @@ namespace UnitTests.OrleansRuntime
         [Fact, TestCategory("Functional"), TestCategory("Serialization")]
         public void SerializationTests_Exception_Orleans()
         {
-            var activationAddress = ActivationAddress.NewActivationAddress(SiloAddress.NewLocalAddress(12345), GrainId.NewId());
+            var activationAddress = ActivationAddress.NewActivationAddress(SiloAddressUtils.NewLocalSiloAddress(12345), GrainId.NewId());
 
             var original = new Catalog.NonExistentActivationException("Some message", activationAddress, false);
             var output = this.fixture.SerializationManager.RoundTripSerializationForTesting(original);
